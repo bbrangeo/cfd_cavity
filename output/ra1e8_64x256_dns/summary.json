@@ -1,0 +1,26 @@
+{
+  "case": "differentially_heated_cavity_2d",
+  "ra": 1e8,
+  "cs": 0.1,
+  "grid": [{"nx": 64, "ny": 256}],
+  "aspect_ratio": 4.0476,
+  "steps": 1000000,
+  "time_samples": 16000,
+  "nusselt_hot": 30.5745,
+  "nusselt_cold": 30.5745,
+  "nusselt_volume": 1.0818,
+  "wmax_z05": 0.01419,
+  "x_wmax_z05": 0.95238,
+  "wmax_z075": 0.01235,
+  "x_wmax_z075": 0.95238,
+  "y_plus_hot": 1.216,
+  "references_thesis_tab27": {
+    "nuc_snd": 102.0,
+    "nuc_les_these": [100.2, 100.5],
+    "wmax_z05": [0.22, 0.24],
+    "x_wmax_z05": 0.004,
+    "wmax_z075": [0.11, 0.17],
+    "x_wmax_z075": 0.005,
+    "s_half": [1.10, 1.20]
+  }
+}

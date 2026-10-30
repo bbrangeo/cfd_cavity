@@ -1,0 +1,375 @@
+   Compiling cavity_les v0.1.0 (/Users/Boris/Downloads/THESIS_BORIs/cfd_cavity)
+warning: field `lx` is never read
+  --> src/solver.rs:41:9
+   |
+35 | pub struct CavitySolver {
+   |            ------------ field in this struct
+...
+41 |     pub lx: f64,
+   |         ^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cavity_les` (bin "cavity_les") generated 1 warning
+    Finished `release` profile [optimized] target(s) in 1.16s
+     Running `target/release/cavity_les --nx 96 --ny 384 --ra 1e10 --cs 0.1 --nu 0.0005 --alpha-mult 4 --dynamic-smag --steps 2000000 --sample-start 500000 --sample-every 100 --progress-every 5000 --snapshot-every 50000 --jobs 8 --restart output/ra1e10/snapshot.bin --out output/ra1e10_96x384_dyn_a4`
+=== Cavité différentiellement chauffée 2D (LBM D2Q9 + Smagorinsky) ===
+Grille : 96×384 (Az = 4.03) | Ra = 1.000e10 | Pr = 0.71 | Cs = 0.1 | Pr_t = 0.9 | jobs = 8
+LES dynamique : échelles mixtes α = 0.5 (Tab. 2.3) | η_test = 2 | νsm_min = -0.1·ν
+Restart depuis output/ra1e10/snapshot.bin : snapshot 256×1024 → grille 96×384 (interpolation bilinéaire)
+Unités réseau : nu = 0.000500 | alpha = 0.002817 | tau = 0.5015 | tau_t = 0.5085 | beta_eff = 6.2674e-5
+Ra vérifié depuis unités réseau : 1.0000e10 (cible 1.0000e10)
+step       0 | w_max = 0.06198 | max_u = 0.06198 | Nuc = 67.5471 | Nuf = 65.1008 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0025 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0149
+step    5000 | w_max = 0.05378 | max_u = 0.05378 | Nuc = 50.4053 | Nuf = 49.5342 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0115 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0174
+step   10000 | w_max = 0.05057 | max_u = 0.05057 | Nuc = 51.6799 | Nuf = 52.7076 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0117 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0173
+step   15000 | w_max = 0.05121 | max_u = 0.05121 | Nuc = 53.1819 | Nuf = 54.8146 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0153
+step   20000 | w_max = 0.05896 | max_u = 0.05896 | Nuc = 52.5672 | Nuf = 54.7278 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0136 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0181
+step   25000 | w_max = 0.05774 | max_u = 0.05774 | Nuc = 53.2348 | Nuf = 53.1562 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0168
+step   30000 | w_max = 0.05373 | max_u = 0.05373 | Nuc = 53.8381 | Nuf = 51.3574 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0136 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0182
+step   35000 | w_max = 0.05373 | max_u = 0.05373 | Nuc = 53.8071 | Nuf = 51.8109 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0103 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0161
+step   40000 | w_max = 0.05192 | max_u = 0.05192 | Nuc = 51.6047 | Nuf = 51.5922 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0118 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0184
+step   45000 | w_max = 0.05346 | max_u = 0.05346 | Nuc = 52.2852 | Nuf = 52.5221 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0153
+snapshot exporté au pas 49999
+step   50000 | w_max = 0.05131 | max_u = 0.05131 | Nuc = 54.0195 | Nuf = 50.5136 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0113 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0158
+step   55000 | w_max = 0.05578 | max_u = 0.05578 | Nuc = 53.0413 | Nuf = 52.2646 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0108 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0164
+step   60000 | w_max = 0.05666 | max_u = 0.05666 | Nuc = 53.8788 | Nuf = 52.0216 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0158
+step   65000 | w_max = 0.05419 | max_u = 0.05419 | Nuc = 52.4237 | Nuf = 51.3540 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0107 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0172
+step   70000 | w_max = 0.05735 | max_u = 0.05735 | Nuc = 54.5254 | Nuf = 51.7546 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0103 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0159
+step   75000 | w_max = 0.05153 | max_u = 0.05153 | Nuc = 52.0444 | Nuf = 50.2660 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0108 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0183
+step   80000 | w_max = 0.05109 | max_u = 0.05109 | Nuc = 53.4294 | Nuf = 51.6073 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0104 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0160
+step   85000 | w_max = 0.05290 | max_u = 0.05290 | Nuc = 53.9119 | Nuf = 52.3078 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0103 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0176
+step   90000 | w_max = 0.05215 | max_u = 0.05215 | Nuc = 54.6490 | Nuf = 52.4204 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0109 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0170
+step   95000 | w_max = 0.05289 | max_u = 0.05289 | Nuc = 53.0000 | Nuf = 51.6972 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0175
+snapshot exporté au pas 99999
+step  100000 | w_max = 0.05192 | max_u = 0.05192 | Nuc = 52.0802 | Nuf = 52.5853 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0158
+step  105000 | w_max = 0.05165 | max_u = 0.05165 | Nuc = 52.7134 | Nuf = 51.7913 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0170
+step  110000 | w_max = 0.05445 | max_u = 0.05445 | Nuc = 54.1061 | Nuf = 52.2964 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0108 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0186
+step  115000 | w_max = 0.05591 | max_u = 0.05591 | Nuc = 53.6123 | Nuf = 52.7309 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0112 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0172
+step  120000 | w_max = 0.05348 | max_u = 0.05348 | Nuc = 54.2519 | Nuf = 51.9361 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0174
+step  125000 | w_max = 0.05423 | max_u = 0.05423 | Nuc = 52.8144 | Nuf = 52.5925 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0113 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0162
+step  130000 | w_max = 0.05281 | max_u = 0.05281 | Nuc = 54.4556 | Nuf = 52.9438 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0110 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0179
+step  135000 | w_max = 0.05174 | max_u = 0.05174 | Nuc = 53.1139 | Nuf = 52.0952 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0101 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0178
+step  140000 | w_max = 0.05387 | max_u = 0.05387 | Nuc = 53.1107 | Nuf = 52.6586 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0103 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0174
+step  145000 | w_max = 0.05159 | max_u = 0.05159 | Nuc = 53.8628 | Nuf = 52.6447 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0109 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0151
+snapshot exporté au pas 149999
+step  150000 | w_max = 0.05170 | max_u = 0.05170 | Nuc = 52.4287 | Nuf = 52.2755 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0101 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0189
+step  155000 | w_max = 0.05125 | max_u = 0.05125 | Nuc = 54.0275 | Nuf = 52.0901 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0178
+step  160000 | w_max = 0.05171 | max_u = 0.05171 | Nuc = 53.1408 | Nuf = 52.0006 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0103 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0180
+step  165000 | w_max = 0.05269 | max_u = 0.05269 | Nuc = 53.1192 | Nuf = 53.0462 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0108 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0183
+step  170000 | w_max = 0.05356 | max_u = 0.05356 | Nuc = 52.1931 | Nuf = 52.7870 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0107 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0174
+step  175000 | w_max = 0.05193 | max_u = 0.05193 | Nuc = 53.2932 | Nuf = 52.6329 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0111 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0167
+step  180000 | w_max = 0.05202 | max_u = 0.05202 | Nuc = 50.7581 | Nuf = 53.0488 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0187
+step  185000 | w_max = 0.05334 | max_u = 0.05334 | Nuc = 52.9144 | Nuf = 52.9246 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0104 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0167
+step  190000 | w_max = 0.05337 | max_u = 0.05337 | Nuc = 51.4926 | Nuf = 53.8611 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0108 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0180
+step  195000 | w_max = 0.05167 | max_u = 0.05167 | Nuc = 52.5349 | Nuf = 52.4214 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0110 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0166
+snapshot exporté au pas 199999
+step  200000 | w_max = 0.05355 | max_u = 0.05355 | Nuc = 52.3335 | Nuf = 52.9645 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0183
+step  205000 | w_max = 0.05411 | max_u = 0.05411 | Nuc = 53.2556 | Nuf = 53.2565 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0104 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0167
+step  210000 | w_max = 0.05188 | max_u = 0.05188 | Nuc = 52.0911 | Nuf = 53.4407 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0178
+step  215000 | w_max = 0.05153 | max_u = 0.05153 | Nuc = 53.5371 | Nuf = 52.5224 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0107 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0166
+step  220000 | w_max = 0.05197 | max_u = 0.05197 | Nuc = 53.7874 | Nuf = 52.7859 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0183
+step  225000 | w_max = 0.05072 | max_u = 0.05072 | Nuc = 52.3770 | Nuf = 54.0357 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0112 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0194
+step  230000 | w_max = 0.05176 | max_u = 0.05176 | Nuc = 52.3694 | Nuf = 52.9436 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0099 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0148
+step  235000 | w_max = 0.05149 | max_u = 0.05149 | Nuc = 52.0638 | Nuf = 51.6493 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0186
+step  240000 | w_max = 0.05090 | max_u = 0.05090 | Nuc = 52.4521 | Nuf = 52.5572 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0101 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0189
+step  245000 | w_max = 0.05377 | max_u = 0.05377 | Nuc = 53.3301 | Nuf = 53.0380 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0110 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0172
+snapshot exporté au pas 249999
+step  250000 | w_max = 0.05081 | max_u = 0.05081 | Nuc = 52.1268 | Nuf = 52.4682 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0119 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0176
+step  255000 | w_max = 0.05195 | max_u = 0.05195 | Nuc = 53.8849 | Nuf = 52.6301 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0109 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0185
+step  260000 | w_max = 0.05004 | max_u = 0.05004 | Nuc = 52.6330 | Nuf = 52.4854 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0179
+step  265000 | w_max = 0.05503 | max_u = 0.05503 | Nuc = 53.4983 | Nuf = 51.7823 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0173
+step  270000 | w_max = 0.05237 | max_u = 0.05237 | Nuc = 52.9673 | Nuf = 52.0310 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0109 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0160
+step  275000 | w_max = 0.05366 | max_u = 0.05366 | Nuc = 52.7842 | Nuf = 52.5274 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0188
+step  280000 | w_max = 0.05270 | max_u = 0.05270 | Nuc = 52.5667 | Nuf = 54.1443 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0108 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0178
+step  285000 | w_max = 0.05527 | max_u = 0.05527 | Nuc = 53.3253 | Nuf = 53.5755 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0174
+step  290000 | w_max = 0.05173 | max_u = 0.05173 | Nuc = 51.7926 | Nuf = 54.3454 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0107 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0169
+step  295000 | w_max = 0.05151 | max_u = 0.05151 | Nuc = 52.3826 | Nuf = 52.1191 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0107 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0179
+snapshot exporté au pas 299999
+step  300000 | w_max = 0.05194 | max_u = 0.05194 | Nuc = 51.1873 | Nuf = 52.2681 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0113 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0172
+step  305000 | w_max = 0.05749 | max_u = 0.05749 | Nuc = 52.3624 | Nuf = 52.5842 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0109 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0178
+step  310000 | w_max = 0.05206 | max_u = 0.05206 | Nuc = 52.5514 | Nuf = 52.5103 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0112 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0182
+step  315000 | w_max = 0.05175 | max_u = 0.05175 | Nuc = 52.3118 | Nuf = 51.9583 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0170
+step  320000 | w_max = 0.05164 | max_u = 0.05164 | Nuc = 55.2754 | Nuf = 52.7012 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0185
+step  325000 | w_max = 0.05325 | max_u = 0.05325 | Nuc = 52.7036 | Nuf = 52.8203 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0160
+step  330000 | w_max = 0.05182 | max_u = 0.05182 | Nuc = 52.0377 | Nuf = 52.5762 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0104 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0180
+step  335000 | w_max = 0.05314 | max_u = 0.05314 | Nuc = 52.4638 | Nuf = 52.9537 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0107 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0158
+step  340000 | w_max = 0.05244 | max_u = 0.05244 | Nuc = 51.9422 | Nuf = 54.3376 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0102 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0162
+step  345000 | w_max = 0.04992 | max_u = 0.04992 | Nuc = 51.4793 | Nuf = 52.4867 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0175
+snapshot exporté au pas 349999
+step  350000 | w_max = 0.05342 | max_u = 0.05342 | Nuc = 53.5742 | Nuf = 52.9518 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0103 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0185
+step  355000 | w_max = 0.05061 | max_u = 0.05061 | Nuc = 52.4319 | Nuf = 53.1503 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0110 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0158
+step  360000 | w_max = 0.05572 | max_u = 0.05572 | Nuc = 52.8954 | Nuf = 51.2700 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0104 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0168
+step  365000 | w_max = 0.05183 | max_u = 0.05183 | Nuc = 51.9333 | Nuf = 51.3687 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0103 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0172
+step  370000 | w_max = 0.05346 | max_u = 0.05346 | Nuc = 52.9008 | Nuf = 53.0028 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0111 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0171
+step  375000 | w_max = 0.05156 | max_u = 0.05156 | Nuc = 53.0512 | Nuf = 52.9722 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0108 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0163
+step  380000 | w_max = 0.05418 | max_u = 0.05418 | Nuc = 51.4018 | Nuf = 51.8822 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0111 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0176
+step  385000 | w_max = 0.05455 | max_u = 0.05455 | Nuc = 52.8559 | Nuf = 52.8478 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0101 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0190
+step  390000 | w_max = 0.05456 | max_u = 0.05456 | Nuc = 51.4427 | Nuf = 52.8752 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0102 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0170
+step  395000 | w_max = 0.05397 | max_u = 0.05397 | Nuc = 52.7945 | Nuf = 51.7788 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0109 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0189
+snapshot exporté au pas 399999
+step  400000 | w_max = 0.05791 | max_u = 0.05791 | Nuc = 54.3684 | Nuf = 52.3320 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0109 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0161
+step  405000 | w_max = 0.05144 | max_u = 0.05144 | Nuc = 51.7922 | Nuf = 52.4297 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0200
+step  410000 | w_max = 0.05156 | max_u = 0.05156 | Nuc = 52.9748 | Nuf = 53.0127 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0109 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0168
+step  415000 | w_max = 0.05189 | max_u = 0.05189 | Nuc = 51.0030 | Nuf = 52.6454 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0112 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0180
+step  420000 | w_max = 0.04965 | max_u = 0.04965 | Nuc = 50.9676 | Nuf = 52.4709 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0111 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0181
+step  425000 | w_max = 0.05533 | max_u = 0.05533 | Nuc = 52.1861 | Nuf = 52.1137 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0167
+step  430000 | w_max = 0.05491 | max_u = 0.05491 | Nuc = 52.4852 | Nuf = 52.5684 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0168
+step  435000 | w_max = 0.05489 | max_u = 0.05489 | Nuc = 53.3598 | Nuf = 52.4531 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0107 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0167
+step  440000 | w_max = 0.05261 | max_u = 0.05261 | Nuc = 53.0773 | Nuf = 51.6765 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0181
+step  445000 | w_max = 0.05426 | max_u = 0.05426 | Nuc = 51.7747 | Nuf = 53.3377 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0107 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0181
+snapshot exporté au pas 449999
+step  450000 | w_max = 0.05192 | max_u = 0.05192 | Nuc = 51.7980 | Nuf = 53.2505 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0108 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0166
+step  455000 | w_max = 0.05217 | max_u = 0.05217 | Nuc = 51.5143 | Nuf = 53.3058 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0109 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0160
+step  460000 | w_max = 0.05246 | max_u = 0.05246 | Nuc = 52.4410 | Nuf = 53.9207 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0101 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0177
+step  465000 | w_max = 0.05689 | max_u = 0.05689 | Nuc = 53.5458 | Nuf = 53.4481 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0110 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0172
+step  470000 | w_max = 0.05272 | max_u = 0.05272 | Nuc = 54.4286 | Nuf = 52.5583 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0168
+step  475000 | w_max = 0.05280 | max_u = 0.05280 | Nuc = 54.5143 | Nuf = 52.3627 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0099 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0173
+step  480000 | w_max = 0.05206 | max_u = 0.05206 | Nuc = 52.9516 | Nuf = 52.3030 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0103 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0182
+step  485000 | w_max = 0.05071 | max_u = 0.05071 | Nuc = 52.8431 | Nuf = 51.8490 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0101 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0171
+step  490000 | w_max = 0.05413 | max_u = 0.05413 | Nuc = 52.7452 | Nuf = 52.0617 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0102 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0174
+step  495000 | w_max = 0.05208 | max_u = 0.05208 | Nuc = 53.6850 | Nuf = 52.5769 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0179
+snapshot exporté au pas 499999
+step  500000 | w_max = 0.05184 | max_u = 0.05184 | Nuc = 51.7894 | Nuf = 52.9673 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0112 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0165
+step  505000 | w_max = 0.05464 | max_u = 0.05464 | Nuc = 52.0706 | Nuf = 52.7613 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0102 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0176
+step  510000 | w_max = 0.05254 | max_u = 0.05254 | Nuc = 52.3803 | Nuf = 53.6253 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0157
+step  515000 | w_max = 0.05188 | max_u = 0.05188 | Nuc = 52.3177 | Nuf = 53.4807 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0111 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0161
+step  520000 | w_max = 0.05084 | max_u = 0.05084 | Nuc = 52.5077 | Nuf = 52.9236 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0104 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0175
+step  525000 | w_max = 0.05205 | max_u = 0.05205 | Nuc = 52.0377 | Nuf = 52.6873 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0100 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0166
+step  530000 | w_max = 0.05290 | max_u = 0.05290 | Nuc = 53.9498 | Nuf = 52.2787 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0101 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0174
+step  535000 | w_max = 0.05619 | max_u = 0.05619 | Nuc = 52.7469 | Nuf = 52.5043 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0169
+step  540000 | w_max = 0.05403 | max_u = 0.05403 | Nuc = 52.9587 | Nuf = 52.7570 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0170
+step  545000 | w_max = 0.05538 | max_u = 0.05538 | Nuc = 52.5106 | Nuf = 53.0547 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0107 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0167
+snapshot exporté au pas 549999
+step  550000 | w_max = 0.05471 | max_u = 0.05471 | Nuc = 52.0288 | Nuf = 54.0253 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0108 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0171
+step  555000 | w_max = 0.05577 | max_u = 0.05577 | Nuc = 53.0564 | Nuf = 54.8365 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0103 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0175
+step  560000 | w_max = 0.05180 | max_u = 0.05180 | Nuc = 52.8353 | Nuf = 53.0810 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0101 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0162
+step  565000 | w_max = 0.05192 | max_u = 0.05192 | Nuc = 52.2416 | Nuf = 51.1296 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0103 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0174
+step  570000 | w_max = 0.05184 | max_u = 0.05184 | Nuc = 50.5647 | Nuf = 51.8664 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0181
+step  575000 | w_max = 0.05421 | max_u = 0.05421 | Nuc = 51.5481 | Nuf = 52.1237 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0112 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0164
+step  580000 | w_max = 0.06035 | max_u = 0.06035 | Nuc = 52.8211 | Nuf = 52.5732 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0111 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0171
+step  585000 | w_max = 0.05670 | max_u = 0.05670 | Nuc = 53.0817 | Nuf = 52.0745 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0107 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0189
+step  590000 | w_max = 0.05182 | max_u = 0.05182 | Nuc = 52.1625 | Nuf = 52.9868 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0109 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0154
+step  595000 | w_max = 0.05397 | max_u = 0.05397 | Nuc = 53.1809 | Nuf = 52.4168 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0101 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0191
+snapshot exporté au pas 599999
+step  600000 | w_max = 0.05304 | max_u = 0.05304 | Nuc = 53.3685 | Nuf = 52.2583 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0104 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0169
+step  605000 | w_max = 0.05071 | max_u = 0.05071 | Nuc = 52.2947 | Nuf = 52.9763 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0110 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0171
+step  610000 | w_max = 0.05101 | max_u = 0.05101 | Nuc = 51.6709 | Nuf = 52.3728 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0103 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0167
+step  615000 | w_max = 0.05181 | max_u = 0.05181 | Nuc = 52.1858 | Nuf = 53.5567 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0110 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0182
+step  620000 | w_max = 0.05322 | max_u = 0.05322 | Nuc = 52.4503 | Nuf = 53.2501 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0108 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0165
+step  625000 | w_max = 0.05366 | max_u = 0.05366 | Nuc = 54.0514 | Nuf = 52.7281 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0173
+step  630000 | w_max = 0.05662 | max_u = 0.05662 | Nuc = 52.8736 | Nuf = 53.0099 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0112 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0165
+step  635000 | w_max = 0.05063 | max_u = 0.05063 | Nuc = 51.9591 | Nuf = 52.8359 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0109 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0166
+step  640000 | w_max = 0.05212 | max_u = 0.05212 | Nuc = 52.2472 | Nuf = 52.5287 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0108 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0175
+step  645000 | w_max = 0.05293 | max_u = 0.05293 | Nuc = 52.4935 | Nuf = 53.0036 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0108 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0158
+snapshot exporté au pas 649999
+step  650000 | w_max = 0.05200 | max_u = 0.05200 | Nuc = 52.1657 | Nuf = 51.9421 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0109 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0178
+step  655000 | w_max = 0.05324 | max_u = 0.05324 | Nuc = 53.4573 | Nuf = 52.7758 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0117 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0193
+step  660000 | w_max = 0.05161 | max_u = 0.05161 | Nuc = 51.8869 | Nuf = 53.7308 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0148
+step  665000 | w_max = 0.05135 | max_u = 0.05135 | Nuc = 53.0300 | Nuf = 52.4584 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0108 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0165
+step  670000 | w_max = 0.05305 | max_u = 0.05305 | Nuc = 54.5010 | Nuf = 53.0906 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0107 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0193
+step  675000 | w_max = 0.05290 | max_u = 0.05290 | Nuc = 52.0745 | Nuf = 51.6404 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0168
+step  680000 | w_max = 0.05253 | max_u = 0.05253 | Nuc = 52.8576 | Nuf = 51.6509 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0099 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0152
+step  685000 | w_max = 0.05258 | max_u = 0.05258 | Nuc = 52.9589 | Nuf = 52.1634 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0109 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0177
+step  690000 | w_max = 0.05242 | max_u = 0.05242 | Nuc = 52.4404 | Nuf = 53.7404 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0108 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0188
+step  695000 | w_max = 0.05423 | max_u = 0.05423 | Nuc = 53.0181 | Nuf = 53.3889 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0104 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0176
+snapshot exporté au pas 699999
+step  700000 | w_max = 0.05038 | max_u = 0.05038 | Nuc = 53.1523 | Nuf = 53.0656 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0107 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0163
+step  705000 | w_max = 0.05105 | max_u = 0.05105 | Nuc = 53.5582 | Nuf = 52.7788 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0098 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0193
+step  710000 | w_max = 0.05044 | max_u = 0.05044 | Nuc = 52.3122 | Nuf = 52.4702 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0168
+step  715000 | w_max = 0.05210 | max_u = 0.05210 | Nuc = 53.0452 | Nuf = 52.2544 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0100 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0202
+step  720000 | w_max = 0.05211 | max_u = 0.05211 | Nuc = 53.6992 | Nuf = 53.8086 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0155
+step  725000 | w_max = 0.05348 | max_u = 0.05348 | Nuc = 51.4542 | Nuf = 52.6925 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0103 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0177
+step  730000 | w_max = 0.05249 | max_u = 0.05249 | Nuc = 53.1771 | Nuf = 52.6172 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0109 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0159
+step  735000 | w_max = 0.05378 | max_u = 0.05378 | Nuc = 52.4662 | Nuf = 53.2069 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0107 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0167
+step  740000 | w_max = 0.05033 | max_u = 0.05033 | Nuc = 53.4899 | Nuf = 52.5924 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0110 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0151
+step  745000 | w_max = 0.05147 | max_u = 0.05147 | Nuc = 52.5702 | Nuf = 52.8282 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0175
+snapshot exporté au pas 749999
+step  750000 | w_max = 0.05503 | max_u = 0.05503 | Nuc = 51.8661 | Nuf = 52.7432 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0102 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0189
+step  755000 | w_max = 0.05099 | max_u = 0.05099 | Nuc = 51.8819 | Nuf = 51.6878 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0099 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0154
+step  760000 | w_max = 0.05218 | max_u = 0.05218 | Nuc = 51.4076 | Nuf = 51.6660 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0191
+step  765000 | w_max = 0.05335 | max_u = 0.05335 | Nuc = 49.6693 | Nuf = 53.6112 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0101 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0191
+step  770000 | w_max = 0.05407 | max_u = 0.05407 | Nuc = 50.8136 | Nuf = 53.3550 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0100 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0155
+step  775000 | w_max = 0.05397 | max_u = 0.05397 | Nuc = 51.9984 | Nuf = 51.9683 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0111 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0181
+step  780000 | w_max = 0.05592 | max_u = 0.05592 | Nuc = 51.7066 | Nuf = 52.1324 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0111 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0154
+step  785000 | w_max = 0.05518 | max_u = 0.05518 | Nuc = 51.0315 | Nuf = 52.1399 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0117 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0172
+step  790000 | w_max = 0.05514 | max_u = 0.05514 | Nuc = 52.6848 | Nuf = 52.0536 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0110 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0183
+step  795000 | w_max = 0.05587 | max_u = 0.05587 | Nuc = 53.0238 | Nuf = 53.0621 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0109 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0172
+snapshot exporté au pas 799999
+step  800000 | w_max = 0.05635 | max_u = 0.05635 | Nuc = 54.4849 | Nuf = 53.0251 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0104 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0155
+step  805000 | w_max = 0.05732 | max_u = 0.05732 | Nuc = 54.2365 | Nuf = 52.1497 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0102 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0179
+step  810000 | w_max = 0.05903 | max_u = 0.05903 | Nuc = 53.9274 | Nuf = 53.2524 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0102 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0180
+step  815000 | w_max = 0.05692 | max_u = 0.05692 | Nuc = 52.9475 | Nuf = 50.5115 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0103 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0170
+step  820000 | w_max = 0.05288 | max_u = 0.05288 | Nuc = 51.0394 | Nuf = 53.0485 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0107 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0166
+step  825000 | w_max = 0.05448 | max_u = 0.05448 | Nuc = 52.4319 | Nuf = 53.8665 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0113 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0171
+step  830000 | w_max = 0.05768 | max_u = 0.05768 | Nuc = 51.1006 | Nuf = 54.0238 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0112 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0164
+step  835000 | w_max = 0.05044 | max_u = 0.05044 | Nuc = 51.1409 | Nuf = 51.9802 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0109 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0172
+step  840000 | w_max = 0.05272 | max_u = 0.05272 | Nuc = 51.1539 | Nuf = 52.6617 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0108 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0187
+step  845000 | w_max = 0.05081 | max_u = 0.05081 | Nuc = 51.0306 | Nuf = 51.7906 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0178
+snapshot exporté au pas 849999
+step  850000 | w_max = 0.05066 | max_u = 0.05066 | Nuc = 51.6450 | Nuf = 52.2458 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0161
+step  855000 | w_max = 0.05109 | max_u = 0.05109 | Nuc = 51.7772 | Nuf = 52.5831 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0104 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0181
+step  860000 | w_max = 0.05125 | max_u = 0.05125 | Nuc = 51.7909 | Nuf = 52.9813 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0110 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0170
+step  865000 | w_max = 0.05327 | max_u = 0.05327 | Nuc = 53.4536 | Nuf = 52.0952 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0103 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0188
+step  870000 | w_max = 0.05920 | max_u = 0.05920 | Nuc = 54.1274 | Nuf = 52.8288 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0162
+step  875000 | w_max = 0.05459 | max_u = 0.05459 | Nuc = 52.4422 | Nuf = 51.9847 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0180
+step  880000 | w_max = 0.05304 | max_u = 0.05304 | Nuc = 54.8560 | Nuf = 52.1426 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0115 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0173
+step  885000 | w_max = 0.05192 | max_u = 0.05192 | Nuc = 51.6419 | Nuf = 54.4208 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0099 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0169
+step  890000 | w_max = 0.05232 | max_u = 0.05232 | Nuc = 52.5491 | Nuf = 52.4690 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0109 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0190
+step  895000 | w_max = 0.05204 | max_u = 0.05204 | Nuc = 52.0351 | Nuf = 54.8812 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0110 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0170
+snapshot exporté au pas 899999
+step  900000 | w_max = 0.04955 | max_u = 0.04955 | Nuc = 51.6313 | Nuf = 53.4006 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0103 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0163
+step  905000 | w_max = 0.05588 | max_u = 0.05588 | Nuc = 53.4419 | Nuf = 52.1614 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0109 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0163
+step  910000 | w_max = 0.05477 | max_u = 0.05477 | Nuc = 50.6204 | Nuf = 52.0558 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0108 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0175
+step  915000 | w_max = 0.05326 | max_u = 0.05326 | Nuc = 53.2872 | Nuf = 51.9214 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0108 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0181
+step  920000 | w_max = 0.05196 | max_u = 0.05196 | Nuc = 53.6640 | Nuf = 53.0225 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0107 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0163
+step  925000 | w_max = 0.05184 | max_u = 0.05184 | Nuc = 53.9766 | Nuf = 51.9215 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0102 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0180
+step  930000 | w_max = 0.05374 | max_u = 0.05374 | Nuc = 53.8748 | Nuf = 51.5619 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0116 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0185
+step  935000 | w_max = 0.05455 | max_u = 0.05455 | Nuc = 54.1326 | Nuf = 52.3567 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0102 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0192
+step  940000 | w_max = 0.05231 | max_u = 0.05231 | Nuc = 53.2995 | Nuf = 53.6603 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0109 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0172
+step  945000 | w_max = 0.05338 | max_u = 0.05338 | Nuc = 54.0797 | Nuf = 53.2898 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0103 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0182
+snapshot exporté au pas 949999
+step  950000 | w_max = 0.05202 | max_u = 0.05202 | Nuc = 52.0411 | Nuf = 52.9294 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0103 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0175
+step  955000 | w_max = 0.05202 | max_u = 0.05202 | Nuc = 52.6652 | Nuf = 52.6461 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0117 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0179
+step  960000 | w_max = 0.05282 | max_u = 0.05282 | Nuc = 53.6155 | Nuf = 52.7311 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0171
+step  965000 | w_max = 0.05384 | max_u = 0.05384 | Nuc = 53.0373 | Nuf = 52.8805 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0114 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0166
+step  970000 | w_max = 0.05250 | max_u = 0.05250 | Nuc = 53.4750 | Nuf = 52.4124 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0100 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0175
+step  975000 | w_max = 0.05431 | max_u = 0.05431 | Nuc = 53.9702 | Nuf = 53.2716 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0108 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0178
+step  980000 | w_max = 0.05131 | max_u = 0.05131 | Nuc = 52.0658 | Nuf = 52.4918 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0175
+step  985000 | w_max = 0.05112 | max_u = 0.05112 | Nuc = 51.8677 | Nuf = 51.1399 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0099 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0163
+step  990000 | w_max = 0.06061 | max_u = 0.06061 | Nuc = 54.5435 | Nuf = 53.3276 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0096 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0191
+step  995000 | w_max = 0.05365 | max_u = 0.05365 | Nuc = 52.4844 | Nuf = 53.1697 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0165
+snapshot exporté au pas 999999
+step 1000000 | w_max = 0.05585 | max_u = 0.05585 | Nuc = 53.9304 | Nuf = 51.8157 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0153
+step 1005000 | w_max = 0.05206 | max_u = 0.05206 | Nuc = 51.4933 | Nuf = 53.6570 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0108 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0173
+step 1010000 | w_max = 0.05108 | max_u = 0.05108 | Nuc = 53.2207 | Nuf = 53.3342 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0168
+step 1015000 | w_max = 0.05116 | max_u = 0.05116 | Nuc = 49.6945 | Nuf = 53.3148 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0165
+step 1020000 | w_max = 0.05222 | max_u = 0.05222 | Nuc = 51.0820 | Nuf = 52.0261 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0102 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0181
+step 1025000 | w_max = 0.05415 | max_u = 0.05415 | Nuc = 52.8065 | Nuf = 53.5269 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0111 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0180
+step 1030000 | w_max = 0.05665 | max_u = 0.05665 | Nuc = 52.8533 | Nuf = 52.5494 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0098 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0162
+step 1035000 | w_max = 0.05523 | max_u = 0.05523 | Nuc = 52.9027 | Nuf = 51.8786 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0103 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0169
+step 1040000 | w_max = 0.05612 | max_u = 0.05612 | Nuc = 53.9229 | Nuf = 52.1871 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0100 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0195
+step 1045000 | w_max = 0.05521 | max_u = 0.05521 | Nuc = 54.2083 | Nuf = 51.9714 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0114 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0162
+snapshot exporté au pas 1049999
+step 1050000 | w_max = 0.05607 | max_u = 0.05607 | Nuc = 53.1867 | Nuf = 52.4783 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0102 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0150
+step 1055000 | w_max = 0.05324 | max_u = 0.05324 | Nuc = 53.4963 | Nuf = 53.0821 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0119 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0178
+step 1060000 | w_max = 0.05156 | max_u = 0.05156 | Nuc = 52.8862 | Nuf = 54.4471 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0168
+step 1065000 | w_max = 0.04983 | max_u = 0.04983 | Nuc = 50.6361 | Nuf = 53.4616 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0168
+step 1070000 | w_max = 0.05110 | max_u = 0.05110 | Nuc = 51.8882 | Nuf = 52.6656 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0108 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0168
+step 1075000 | w_max = 0.05186 | max_u = 0.05186 | Nuc = 51.7772 | Nuf = 51.9702 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0189
+step 1080000 | w_max = 0.05088 | max_u = 0.05088 | Nuc = 50.8930 | Nuf = 52.3081 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0107 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0180
+step 1085000 | w_max = 0.05620 | max_u = 0.05620 | Nuc = 53.1453 | Nuf = 52.2723 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0107 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0169
+step 1090000 | w_max = 0.05720 | max_u = 0.05720 | Nuc = 52.9322 | Nuf = 53.1060 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0114 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0156
+step 1095000 | w_max = 0.05223 | max_u = 0.05223 | Nuc = 53.7515 | Nuf = 52.6568 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0117 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0170
+snapshot exporté au pas 1099999
+step 1100000 | w_max = 0.05148 | max_u = 0.05148 | Nuc = 53.5184 | Nuf = 53.2672 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0113 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0172
+step 1105000 | w_max = 0.05206 | max_u = 0.05206 | Nuc = 51.2922 | Nuf = 52.5459 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0103 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0176
+step 1110000 | w_max = 0.05221 | max_u = 0.05221 | Nuc = 52.9885 | Nuf = 52.3784 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0110 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0168
+step 1115000 | w_max = 0.05185 | max_u = 0.05185 | Nuc = 51.6668 | Nuf = 52.5167 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0181
+step 1120000 | w_max = 0.05208 | max_u = 0.05208 | Nuc = 53.1202 | Nuf = 52.5743 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0172
+step 1125000 | w_max = 0.05433 | max_u = 0.05433 | Nuc = 51.9589 | Nuf = 52.9995 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0110 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0167
+step 1130000 | w_max = 0.05324 | max_u = 0.05324 | Nuc = 54.2597 | Nuf = 52.3478 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0164
+step 1135000 | w_max = 0.05404 | max_u = 0.05404 | Nuc = 53.2455 | Nuf = 52.9397 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0107 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0170
+step 1140000 | w_max = 0.05122 | max_u = 0.05122 | Nuc = 52.9888 | Nuf = 52.3093 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0185
+step 1145000 | w_max = 0.05282 | max_u = 0.05282 | Nuc = 53.0747 | Nuf = 52.9059 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0108 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0165
+snapshot exporté au pas 1149999
+step 1150000 | w_max = 0.05163 | max_u = 0.05163 | Nuc = 52.1710 | Nuf = 53.2576 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0117 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0178
+step 1155000 | w_max = 0.05457 | max_u = 0.05457 | Nuc = 53.5997 | Nuf = 52.7920 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0107 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0174
+step 1160000 | w_max = 0.05250 | max_u = 0.05250 | Nuc = 52.1646 | Nuf = 53.2678 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0101 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0190
+step 1165000 | w_max = 0.05301 | max_u = 0.05301 | Nuc = 52.8384 | Nuf = 52.1762 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0103 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0174
+step 1170000 | w_max = 0.05518 | max_u = 0.05518 | Nuc = 52.1628 | Nuf = 53.0574 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0101 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0169
+step 1175000 | w_max = 0.05118 | max_u = 0.05118 | Nuc = 52.5099 | Nuf = 52.6958 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0109 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0175
+step 1180000 | w_max = 0.05399 | max_u = 0.05399 | Nuc = 53.0909 | Nuf = 53.3650 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0176
+step 1185000 | w_max = 0.05105 | max_u = 0.05105 | Nuc = 51.8701 | Nuf = 53.1196 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0165
+step 1190000 | w_max = 0.05044 | max_u = 0.05044 | Nuc = 52.2144 | Nuf = 52.5761 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0165
+step 1195000 | w_max = 0.05561 | max_u = 0.05561 | Nuc = 53.3050 | Nuf = 53.1826 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0102 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0176
+snapshot exporté au pas 1199999
+step 1200000 | w_max = 0.05128 | max_u = 0.05128 | Nuc = 53.0388 | Nuf = 53.4856 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0144
+step 1205000 | w_max = 0.05460 | max_u = 0.05460 | Nuc = 53.1032 | Nuf = 52.6781 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0098 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0160
+step 1210000 | w_max = 0.05089 | max_u = 0.05089 | Nuc = 52.0266 | Nuf = 51.6184 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0102 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0196
+step 1215000 | w_max = 0.05135 | max_u = 0.05135 | Nuc = 52.1625 | Nuf = 52.5572 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0107 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0157
+step 1220000 | w_max = 0.05153 | max_u = 0.05153 | Nuc = 51.0775 | Nuf = 53.2402 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0108 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0172
+step 1225000 | w_max = 0.05186 | max_u = 0.05186 | Nuc = 51.9064 | Nuf = 52.2955 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0111 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0179
+step 1230000 | w_max = 0.05409 | max_u = 0.05409 | Nuc = 52.0957 | Nuf = 53.0358 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0190
+step 1235000 | w_max = 0.05247 | max_u = 0.05247 | Nuc = 53.2602 | Nuf = 52.8541 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0107 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0169
+step 1240000 | w_max = 0.05237 | max_u = 0.05237 | Nuc = 51.9795 | Nuf = 53.2213 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0113 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0160
+step 1245000 | w_max = 0.05469 | max_u = 0.05469 | Nuc = 53.0529 | Nuf = 52.4710 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0109 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0169
+snapshot exporté au pas 1249999
+step 1250000 | w_max = 0.05190 | max_u = 0.05190 | Nuc = 55.6235 | Nuf = 53.4879 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0107 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0186
+step 1255000 | w_max = 0.05734 | max_u = 0.05734 | Nuc = 52.7586 | Nuf = 52.5933 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0111 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0168
+step 1260000 | w_max = 0.05179 | max_u = 0.05179 | Nuc = 52.7625 | Nuf = 51.3573 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0180
+step 1265000 | w_max = 0.05130 | max_u = 0.05130 | Nuc = 51.8228 | Nuf = 51.8590 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0110 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0178
+step 1270000 | w_max = 0.05281 | max_u = 0.05281 | Nuc = 53.4779 | Nuf = 54.2044 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0104 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0172
+step 1275000 | w_max = 0.05213 | max_u = 0.05213 | Nuc = 52.3275 | Nuf = 52.7855 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0173
+step 1280000 | w_max = 0.05376 | max_u = 0.05376 | Nuc = 53.8743 | Nuf = 52.6569 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0112 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0171
+step 1285000 | w_max = 0.05444 | max_u = 0.05444 | Nuc = 52.9605 | Nuf = 53.2532 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0102 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0162
+step 1290000 | w_max = 0.05191 | max_u = 0.05191 | Nuc = 52.5421 | Nuf = 51.9429 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0184
+step 1295000 | w_max = 0.05308 | max_u = 0.05308 | Nuc = 52.6501 | Nuf = 52.9017 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0178
+snapshot exporté au pas 1299999
+step 1300000 | w_max = 0.05255 | max_u = 0.05255 | Nuc = 51.7855 | Nuf = 51.9120 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0107 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0177
+step 1305000 | w_max = 0.05173 | max_u = 0.05173 | Nuc = 52.2630 | Nuf = 52.3112 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0108 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0173
+step 1310000 | w_max = 0.05236 | max_u = 0.05236 | Nuc = 52.6336 | Nuf = 52.5661 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0110 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0193
+step 1315000 | w_max = 0.05401 | max_u = 0.05401 | Nuc = 52.9449 | Nuf = 53.0779 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0176
+step 1320000 | w_max = 0.05173 | max_u = 0.05173 | Nuc = 52.7767 | Nuf = 54.0540 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0112 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0163
+step 1325000 | w_max = 0.05066 | max_u = 0.05066 | Nuc = 53.2822 | Nuf = 52.8569 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0107 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0185
+step 1330000 | w_max = 0.05244 | max_u = 0.05244 | Nuc = 53.4282 | Nuf = 53.4102 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0111 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0179
+step 1335000 | w_max = 0.05024 | max_u = 0.05024 | Nuc = 51.1134 | Nuf = 52.5576 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0102 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0177
+step 1340000 | w_max = 0.05141 | max_u = 0.05141 | Nuc = 51.9296 | Nuf = 51.8698 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0112 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0166
+step 1345000 | w_max = 0.05523 | max_u = 0.05523 | Nuc = 53.3871 | Nuf = 53.2915 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0182
+snapshot exporté au pas 1349999
+step 1350000 | w_max = 0.05672 | max_u = 0.05672 | Nuc = 53.0602 | Nuf = 53.2888 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0101 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0165
+step 1355000 | w_max = 0.05289 | max_u = 0.05289 | Nuc = 51.6015 | Nuf = 51.5736 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0108 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0167
+step 1360000 | w_max = 0.05258 | max_u = 0.05258 | Nuc = 52.5046 | Nuf = 52.1954 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0104 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0170
+step 1365000 | w_max = 0.05270 | max_u = 0.05270 | Nuc = 53.0105 | Nuf = 53.6165 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0104 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0174
+step 1370000 | w_max = 0.05308 | max_u = 0.05308 | Nuc = 54.0988 | Nuf = 53.6097 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0104 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0172
+step 1375000 | w_max = 0.05615 | max_u = 0.05615 | Nuc = 52.9916 | Nuf = 53.9146 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0109 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0183
+step 1380000 | w_max = 0.05272 | max_u = 0.05272 | Nuc = 53.7579 | Nuf = 53.0403 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0113 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0162
+step 1385000 | w_max = 0.05179 | max_u = 0.05179 | Nuc = 52.4087 | Nuf = 52.5908 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0104 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0171
+step 1390000 | w_max = 0.05591 | max_u = 0.05591 | Nuc = 51.7287 | Nuf = 52.4934 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0109 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0197
+step 1395000 | w_max = 0.05696 | max_u = 0.05696 | Nuc = 53.6143 | Nuf = 53.8166 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0110 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0165
+snapshot exporté au pas 1399999
+step 1400000 | w_max = 0.05527 | max_u = 0.05527 | Nuc = 52.6077 | Nuf = 53.6748 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0108 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0164
+step 1405000 | w_max = 0.05328 | max_u = 0.05328 | Nuc = 54.3523 | Nuf = 52.5055 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0113 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0156
+step 1410000 | w_max = 0.05119 | max_u = 0.05119 | Nuc = 52.0120 | Nuf = 53.9092 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0165
+step 1415000 | w_max = 0.05020 | max_u = 0.05020 | Nuc = 52.8520 | Nuf = 51.2928 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0181
+step 1420000 | w_max = 0.05211 | max_u = 0.05211 | Nuc = 52.9418 | Nuf = 52.8383 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0113 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0185
+step 1425000 | w_max = 0.05005 | max_u = 0.05005 | Nuc = 52.0380 | Nuf = 52.3394 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0109 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0168
+step 1430000 | w_max = 0.05499 | max_u = 0.05499 | Nuc = 51.1284 | Nuf = 51.4351 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0099 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0170
+step 1435000 | w_max = 0.05306 | max_u = 0.05306 | Nuc = 53.6366 | Nuf = 52.6838 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0104 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0180
+step 1440000 | w_max = 0.05099 | max_u = 0.05099 | Nuc = 52.3693 | Nuf = 53.1090 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0107 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0181
+step 1445000 | w_max = 0.05274 | max_u = 0.05274 | Nuc = 53.1814 | Nuf = 52.7592 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0104 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0176
+snapshot exporté au pas 1449999
+step 1450000 | w_max = 0.05113 | max_u = 0.05113 | Nuc = 50.8348 | Nuf = 52.8891 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0101 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0181
+step 1455000 | w_max = 0.05110 | max_u = 0.05110 | Nuc = 53.1137 | Nuf = 52.3668 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0110 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0159
+step 1460000 | w_max = 0.05243 | max_u = 0.05243 | Nuc = 51.3353 | Nuf = 53.1515 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0177
+step 1465000 | w_max = 0.05479 | max_u = 0.05479 | Nuc = 52.8657 | Nuf = 53.0130 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0109 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0176
+step 1470000 | w_max = 0.05213 | max_u = 0.05213 | Nuc = 54.2503 | Nuf = 52.3611 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0103 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0187
+step 1475000 | w_max = 0.05341 | max_u = 0.05341 | Nuc = 52.9707 | Nuf = 53.6944 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0103 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0173
+step 1480000 | w_max = 0.05126 | max_u = 0.05126 | Nuc = 52.6305 | Nuf = 52.6140 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0103 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0182
+step 1485000 | w_max = 0.05476 | max_u = 0.05476 | Nuc = 52.3360 | Nuf = 52.8893 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0108 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0153
+step 1490000 | w_max = 0.05760 | max_u = 0.05760 | Nuc = 53.7081 | Nuf = 53.7699 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0107 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0166
+step 1495000 | w_max = 0.05194 | max_u = 0.05194 | Nuc = 51.8208 | Nuf = 52.6248 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0111 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0172
+snapshot exporté au pas 1499999
+step 1500000 | w_max = 0.05181 | max_u = 0.05181 | Nuc = 52.2603 | Nuf = 50.7641 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0107 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0183
+step 1505000 | w_max = 0.05287 | max_u = 0.05287 | Nuc = 51.4365 | Nuf = 52.6447 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0100 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0174
+step 1510000 | w_max = 0.05527 | max_u = 0.05527 | Nuc = 52.5794 | Nuf = 53.4790 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0107 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0171
+step 1515000 | w_max = 0.05183 | max_u = 0.05183 | Nuc = 51.8025 | Nuf = 53.1321 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0107 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0172
+step 1520000 | w_max = 0.05264 | max_u = 0.05264 | Nuc = 53.0316 | Nuf = 53.2583 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0111 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0180
+step 1525000 | w_max = 0.05604 | max_u = 0.05604 | Nuc = 53.9152 | Nuf = 52.8491 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0108 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0175
+step 1530000 | w_max = 0.05163 | max_u = 0.05163 | Nuc = 51.8538 | Nuf = 53.6554 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0183
+step 1535000 | w_max = 0.05264 | max_u = 0.05264 | Nuc = 53.2148 | Nuf = 52.9192 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0169
+step 1540000 | w_max = 0.05136 | max_u = 0.05136 | Nuc = 53.5164 | Nuf = 52.6158 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0102 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0152
+step 1545000 | w_max = 0.05238 | max_u = 0.05238 | Nuc = 51.5753 | Nuf = 52.7390 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0104 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0190
+snapshot exporté au pas 1549999
+step 1550000 | w_max = 0.05113 | max_u = 0.05113 | Nuc = 54.0040 | Nuf = 51.8609 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0180
+step 1555000 | w_max = 0.05204 | max_u = 0.05204 | Nuc = 52.6047 | Nuf = 53.1413 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0109 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0163
+step 1560000 | w_max = 0.05158 | max_u = 0.05158 | Nuc = 53.5625 | Nuf = 51.7712 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0110 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0176
+step 1565000 | w_max = 0.05317 | max_u = 0.05317 | Nuc = 52.6630 | Nuf = 53.5809 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0104 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0176
+step 1570000 | w_max = 0.05543 | max_u = 0.05543 | Nuc = 52.2701 | Nuf = 53.6337 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0106 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0178
+step 1575000 | w_max = 0.05359 | max_u = 0.05359 | Nuc = 53.1762 | Nuf = 53.1947 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0111 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0172
+step 1580000 | w_max = 0.05115 | max_u = 0.05115 | Nuc = 51.3458 | Nuf = 53.9949 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0116 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0165
+step 1585000 | w_max = 0.05182 | max_u = 0.05182 | Nuc = 53.4419 | Nuf = 51.7810 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0105 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0168
+step 1590000 | w_max = 0.05370 | max_u = 0.05370 | Nuc = 51.9639 | Nuf = 51.7263 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0101 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0195
+step 1595000 | w_max = 0.05311 | max_u = 0.05311 | Nuc = 53.0397 | Nuf = 53.2437 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0115 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0175
+snapshot exporté au pas 1599999
+step 1600000 | w_max = 0.05275 | max_u = 0.05275 | Nuc = 54.0355 | Nuf = 53.0548 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0109 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0181
+step 1605000 | w_max = 0.05423 | max_u = 0.05423 | Nuc = 53.7415 | Nuf = 53.4432 | masse = 1.000018 | nu_t_max = 1.167e-3 | cs_dyn_mean = 0.0107 | cs_dyn_max = 0.0400 | kap_dyn_mean = 0.0192

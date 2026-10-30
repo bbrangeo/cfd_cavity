@@ -1,0 +1,6 @@
+/target
+
+# artefacts binaires de simulation (snapshots, ParaView)
+*.bin
+*.vti
+.DS_Store
