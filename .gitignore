@@ -4,3 +4,6 @@
 *.bin
 *.vti
 .DS_Store
+
+# logs de simulation
+*.log
