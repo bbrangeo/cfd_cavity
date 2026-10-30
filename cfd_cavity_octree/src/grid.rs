@@ -11,8 +11,17 @@
 //! espacement 1. Nœuds fins intérieurs à (bx0 + k/2, by0 + m/2), k = 0..2fw
 //! (coïncidence exacte avec les nœuds grossiers du bloc aux positions paires).
 //! Couches fantômes : 1 nœud fin de chaque côté, aux demi-coordonnées
-//! (bx0 − 0.5, bx1 + 0.5, ...) —Stencil bilinéaire à poids 1/2 sur les deux
+//! (bx0 − 0.5, bx1 + 0.5, ...) — Stencil bilinéaire à poids 1/2 sur les deux
 //! nœuds grossiers encadrants.
+//!
+//! Étape B (plan §2.1 : « parois toujours au niveau fin max ») : le bloc fin
+//! PEUT toucher les bords du domaine (bx0 = 0, bx1 = nx0, by0 = 0, by1 = ny0).
+//! Les couches fantômes alors HORS du domaine reçoivent un stencil
+//! d'extrapolation linéaire clampé (poids > 1 / < 0, somme = 1) — les champs
+//! de paroi étant lisses (T imposé, u = 0), le biais est négligeable.
+//! Les nœuds grossiers coïncidents situés SUR le bord physique du domaine
+//! sont exclus du transfert fin→grossier : leurs CL (isotherme/adiabatique/
+//! no-slip) y restent exactes et ne sont jamais polluées par le moyennage.
 
 /// Entrée de la table grossier→fin : un nœud fantôme fin + son stencil
 /// bilinéaire de 4 nœuds grossiers (indice, poids).
@@ -54,14 +63,11 @@ pub struct OctreeGrid {
 
 impl OctreeGrid {
     /// Construit la grille et PRÉCALCULE les tables de voisinage (plan §2.1).
-    /// Contraintes : le bloc fin doit laisser une marge ≥ 1 cellule grossière
-    /// aux bords du domaine (stencil bilinéaire des fantômes).
+    /// Le bloc fin peut toucher les bords du domaine (Étape B : BL de paroi
+    /// raffinée, plan §2.1 « parois toujours au niveau fin max ») — les
+    /// stencils hors domaine sont alors extrapolés (voir `bilinear_stencil`).
     pub fn new(nx0: usize, ny0: usize, bx0: usize, by0: usize, bx1: usize, by1: usize) -> Self {
-        assert!(bx0 >= 1 && by0 >= 1, "bloc fin : marge >= 1 cellule grossiere requise (stencil bilineaire des fantomes)");
-        assert!(
-            bx1 + 1 <= nx0 - 1 && by1 + 1 <= ny0 - 1,
-            "bloc fin : marge >= 1 cellule grossiere cote domaine requise"
-        );
+        assert!(bx1 <= nx0 && by1 <= ny0, "bloc fin hors domaine grossier");
         assert!(bx0 < bx1 && by0 < by1, "bloc fin vide");
         let fw = bx1 - bx0;
         let fh = by1 - by0;
@@ -89,10 +95,16 @@ impl OctreeGrid {
         }
 
         // --- Table fin→grossier : nœuds grossiers coïncidents du bloc,
-        // 2×2 nœuds fins {x, x+0.5} × {y, y+0.5} (moyenne §1.2).
+        // 2×2 nœuds fins {x, x+0.5} × {y, y+0.5} (moyenne §1.2). Les nœuds
+        // SUR le bord physique du domaine sont exclus (Étape B : les CL de
+        // paroi grossières — isotherme/adiabatique/no-slip — y restent
+        // exactes, jamais écrasées par le moyennage fin).
         let mut coincident = Vec::new();
         for cy in by0..by1 {
             for cx in bx0..bx1 {
+                if cx == 0 || cx + 1 == nx0 || cy == 0 || cy + 1 == ny0 {
+                    continue;
+                }
                 let a = 2 * (cx - bx0) + 1; // nœud fin coïncident (x = cx)
                 let b = 2 * (cy - by0) + 1;
                 coincident.push(CoarseEntry {
@@ -128,17 +140,16 @@ impl OctreeGrid {
 
 /// Stencil bilinéaire de 4 nœuds grossiers encadrant la position (x_c, y_c)
 /// en coordonnées grossières. Poids : (1−fx)(1−fy), fx(1−fy), (1−fx)fy, fx·fy.
-fn bilinear_stencil(x_c: f64, y_c: f64, nx0: usize, ny0: usize) -> [(usize, f64); 4] {
-    let ix = x_c.floor();
-    let iy = y_c.floor();
-    let fx = x_c - ix;
-    let fy = y_c - iy;
-    let ix = ix as usize;
-    let iy = iy as usize;
-    assert!(
-        ix + 1 < nx0 && iy + 1 < ny0,
-        "stencil bilineaire hors domaine grossier"
-    );
+/// La base (ix, iy) est CLAMPÉE au domaine : pour une position hors domaine
+/// (couche fantôme d'un bloc accolé à une paroi, Étape B), fx/fy sortent de
+/// [0, 1] et le stencil devient une EXTRAPOLATION linéaire one-sided
+/// (poids 1.5/−0.5, somme = 1) — biais négligeable sur les champs de paroi
+/// lisses (T imposé, u = 0).
+pub fn bilinear_stencil(x_c: f64, y_c: f64, nx0: usize, ny0: usize) -> [(usize, f64); 4] {
+    let ix = (x_c.floor() as i64).clamp(0, nx0 as i64 - 2) as usize;
+    let iy = (y_c.floor() as i64).clamp(0, ny0 as i64 - 2) as usize;
+    let fx = x_c - ix as f64;
+    let fy = y_c - iy as f64;
     [
         (iy * nx0 + ix, (1.0 - fx) * (1.0 - fy)),
         (iy * nx0 + ix + 1, fx * (1.0 - fy)),

@@ -7,6 +7,9 @@
 //!   bloc fin rectangulaire intérieur, module interface avec rescaling f^neq
 //!   (§1.2 : f^neq_fin = (1/2)·ξ·f^neq_grossier, ξ = τ_fin/τ_grossier sur la
 //!   partie paire), tests unitaires V1.
+//! - Étape B (porte V2, plan §3.1/§3.3) : cavité DHC 2D Ra=1e6 sur l'octree
+//!   (module `cavity` : collision TRT + Boussinesq Guo, CL thermiques, Nusselt,
+//!   monitoring bruit acoustique max|ρ−ρ̄| global et aux interfaces).
 //! - Le crate uniforme validé `cavity_les` n'est PAS modifié (§2 du plan).
 //!
 //! Briques réutilisées à l'identique du crate uniforme : collision TRT
@@ -15,6 +18,7 @@
 //! `oxiphysics-lbm` (feq/geq). Pas de Smagorinsky en Étape A : ν constant
 //! par niveau (τ⁺/τ⁻ constants par niveau, ξ = rapport des τ).
 
+pub mod cavity;
 pub mod grid;
 pub mod interface;
 pub mod lbm;

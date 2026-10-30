@@ -5,3 +5,10 @@ edition = "2024"
 
 [dependencies]
 oxiphysics-lbm = "0.1.2"
+# Data-parallelisme standard (rayon, écosystème rust-lang) pour --jobs —
+# même dépendance que le crate uniforme validé.
+rayon = "1"
+
+[[bin]]
+name = "cfd_cavity_octree"
+path = "src/main.rs"
