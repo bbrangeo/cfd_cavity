@@ -199,24 +199,32 @@ fn v1_interface_conserves_mass_and_momentum() {
     assert!((sum_my - exp_my).abs() < 1e-12, "Σρuy : {}", (sum_my - exp_my).abs());
 }
 
-/// Test V1 symétrique (fin→grossier, §1.2 : « moyenne 2×2 + 1/ξ ») :
-/// 1. conservation par bloc coïncident — ρ_c = moyenne 2×2 de ρ_f, T_c idem,
-///    j_c = moyenne 2×2 de j_f + (1/ξ_odd)·momentum du f^neq moyenné ;
+/// Test V1 symétrique (fin→grossier, §1.2 : « moyenne + 1/ξ ») :
+/// 1. conservation par bloc coïncident — ρ_c = moyenne pondérée des ρ_f sur
+///    le stencil 9 nœuds (¼-½-¼ ⊗ ¼-½-¼ centré, Lagrava), T_c idem,
+///    j_c = moyenne pondérée de j_f + (1/ξ_odd)·momentum du f^neq moyenné ;
 /// 2. inversion algébrique exacte : rescale⁻¹(rescale(fneq)) == fneq à 1e-15
 ///    (les facteurs 1/ξ s'annulent bit à bit sur les parties paire/impaire).
+///
+/// Le champ analytique est posé sur TOUS les nœuds fins (intérieurs ET
+/// couches fantômes) : le stencil 9 nœuds des coïncidents de bord lit la
+/// couche fantôme d'interface (dans le solveur réel elle est injectée par le
+/// couplage §1.2 avant la restriction — cf. grid.rs) ; le test vérifie
+/// l'algèbre du stencil sur un champ lisse, la teneur des fantômes étant
+/// couverte par le test grossier→fin.
 #[test]
 fn v1_fine_to_coarse_conserves_and_inverse() {
     let grid = OctreeGrid::new(NX0, NY0, BX0, BY0, BX1, BY1);
     let mut s = OctreeSolver::new(grid, NU_COARSE, ALPHA_COARSE, false);
 
-    // Champ fin imposé (nœuds intérieurs, seuls lus par fine_to_coarse) :
+    // Champ fin imposé (TOUS les nœuds, fantômes compris) :
     // couette + gradient T + ρ = 1 + ε·sin(2πy/ny1) + f^neq pair et impair.
     let eps = 1e-3;
     let eps_e = 2e-4;
     let eps_o = 5e-4;
     let u0 = 0.02;
-    for b in 1..s.fine.ny - 1 {
-        for a in 1..s.fine.nx - 1 {
+    for b in 0..s.fine.ny {
+        for a in 0..s.fine.nx {
             let k = b * s.fine.nx + a;
             let x = BX0 as f64 - 0.5 + 0.5 * a as f64;
             let y = BY0 as f64 - 0.5 + 0.5 * b as f64;
@@ -244,27 +252,27 @@ fn v1_fine_to_coarse_conserves_and_inverse() {
     let mut err_my = 0.0f64;
     for cell in &s.grid.coincident {
         let k_c = cell.k_coarse;
-        // Moyenne 2×2 attendue des moments fins + contribution 1/ξ_odd du
-        // f^neq (la partie paire rescalée par 1/ξ_even a un momentum nul).
+        // Moyenne pondérée attendue des moments fins (stencil 9 nœuds
+        // ¼-½-¼ ⊗ ¼-½-¼ centré, Lagrava — les poids sont dans cell.stencil)
+        // + contribution 1/ξ_odd du f^neq (la partie paire rescalée par
+        // 1/ξ_even a un momentum nul).
         let (mut e_rho, mut e_mx, mut e_my, mut e_t) = (0.0, 0.0, 0.0, 0.0);
         let mut fneq_mx = 0.0;
         let mut fneq_my = 0.0;
-        for &k_f in &cell.fine_idx {
-            e_rho += s.fine.rho[k_f];
-            e_mx += s.fine.rho[k_f] * s.fine.ux[k_f];
-            e_my += s.fine.rho[k_f] * s.fine.uy[k_f];
-            e_t += s.fine.temp[k_f];
+        for &(k_f, w) in &cell.stencil {
+            e_rho += w * s.fine.rho[k_f];
+            e_mx += w * s.fine.rho[k_f] * s.fine.ux[k_f];
+            e_my += w * s.fine.rho[k_f] * s.fine.uy[k_f];
+            e_t += w * s.fine.temp[k_f];
             for i in 0..9 {
                 let fneq = s.fine.f[k_f][i]
                     - feq(i, s.fine.rho[k_f], s.fine.ux[k_f], s.fine.uy[k_f]);
-                fneq_mx += D2Q9_VELOCITIES[i][0] as f64 * fneq;
-                fneq_my += D2Q9_VELOCITIES[i][1] as f64 * fneq;
+                fneq_mx += w * D2Q9_VELOCITIES[i][0] as f64 * fneq;
+                fneq_my += w * D2Q9_VELOCITIES[i][1] as f64 * fneq;
             }
         }
-        e_rho *= 0.25;
-        e_mx = 0.25 * e_mx + fneq_mx / (4.0 * s.xi.xi_odd);
-        e_my = 0.25 * e_my + fneq_my / (4.0 * s.xi.xi_odd);
-        e_t *= 0.25;
+        e_mx += fneq_mx / s.xi.xi_odd;
+        e_my += fneq_my / s.xi.xi_odd;
 
         // Moments réels du nœud grossier injecté (depuis les distributions).
         let mut rho = 0.0;
@@ -387,7 +395,7 @@ fn v1_xi_matches_relaxation_time_ratio() {
 /// (dégage les pics d'interface — préliminaire du claim V2).
 #[test]
 fn v2_cavity_mass_conserved_with_guo_force() {
-    let mut sim = CavitySolver::new(32, 64, 4, 1.0e6, 0.71, 0.02, 42, 1, false);
+    let mut sim = CavitySolver::new(32, 64, 4, 1.0e6, 0.71, 0.02, 42, 1, false, 2);
     let n0 = (sim.nx0 * sim.ny0) as f64;
     for step in 0..10 {
         sim.step_cavity();
@@ -409,7 +417,7 @@ fn v2_cavity_mass_conserved_with_guo_force() {
 /// couvre bien les deux niveaux (max global ≥ max interfaces).
 #[test]
 fn v2_noise_stats_bounded_and_covers_both_levels() {
-    let mut sim = CavitySolver::new(32, 64, 4, 1.0e6, 0.71, 0.02, 42, 1, false);
+    let mut sim = CavitySolver::new(32, 64, 4, 1.0e6, 0.71, 0.02, 42, 1, false, 2);
     let mut prev = 0.0f64;
     for step in 0..20 {
         sim.step_cavity();
@@ -440,7 +448,7 @@ fn v2_noise_stats_bounded_and_covers_both_levels() {
 /// gradient 2ᵉ liaison et l'échelle Lz sur champ non perturbé).
 #[test]
 fn v2_nusselt_conductive_initial() {
-    let sim = CavitySolver::new(32, 64, 4, 1.0e6, 0.71, 0.02, 42, 1, false);
+    let sim = CavitySolver::new(32, 64, 4, 1.0e6, 0.71, 0.02, 42, 1, false, 2);
     // Champ initial : T linéaire + perturbation ±1e-3 ⇒ Nuc ≈ 1 à ±3e-2
     // (perturbation relative 1e-3 sur un gradient moyen 1/31, i.e. ~3 %).
     let nuc = nusselt_hot(&sim.coarse);
@@ -450,4 +458,112 @@ fn v2_nusselt_conductive_initial() {
     // run de référence output/ra1e6_full : Nuc(0) = 0.9995).
     assert!((nuc - 1.0).abs() < 0.05, "Nuc initial ≉ 1 : {nuc}");
     assert!((nuf - 1.0).abs() < 0.05, "Nuf initial ≉ 1 : {nuf}");
+}
+
+// ---------------------------------------------------------------------------
+// Tests V6 (Étape F, escalier tanh multi-niveaux — plan §3.3)
+// ---------------------------------------------------------------------------
+
+/// V6.1 : mapping multi-niveaux (`--levels 3`) — structure et géométrie de la
+/// bande L2 imbriquée dans chaque bloc L1 :
+/// 1. chaque bloc porte un `sub` de largeur 1 cellule L0 (nx2 = 2·2+3 = 7) ;
+/// 2. τ_L2 = 4·ν_L0 (§1.3 : ν_lu,n = 2^(n−1)·ν_L0) et ξ_B = (1/2)·τ⁺_L2/τ⁺_L1
+///    (§1.2 généralisé, facteur temporel 2^-1) ;
+/// 3. la table coïncidente L2 exclut bien la colonne de mur/bord d'interface
+///    (wall_left : cx == bx0 exclu) et la ligne du mur bas (wall_bottom :
+///    cy == by0 exclu) — aucune CL physique L1 n'est écrasée par le moyennage ;
+/// 4. les nœuds coïncidents L2 restants tombent dans la bande tanh
+///    (position physique |x − paroi| ≤ 2·dx_base, frontière §0.1).
+#[test]
+fn v6_multilevel_mapping_structure() {
+    let sim = CavitySolver::new(32, 64, 4, 1.0e6, 0.71, 0.02, 42, 1, false, 3);
+    assert_eq!(sim.levels, 3, "levels");
+    let nu0 = sim.nu_lu;
+
+    // Référence τ/facteurs : τ⁺_L2 = 0.5 + 3·4ν, ξ_B = (1/2)·τ⁺_L2/τ⁺_L1.
+    let tau_l1 = sim.tau_fine;
+    let tau_l2_expect = RelaxTimes::from_nu_alpha(4.0 * nu0, 4.0 * nu0 / 0.71);
+    let xi_b_expect = 0.5 * tau_l2_expect.tau_plus / tau_l1.tau_plus;
+
+    for block in &sim.blocks {
+        let sub = block.sub.as_ref().expect("bande L2 absente en levels=3");
+        // 1. Largeur : strip de 2 cellules L1 (1 cellule L0) ⇒ nx2 = 7.
+        assert_eq!(sub.grid.nx1, 7, "nx2 du strip L2");
+        // 2. τ et ξ_B (§1.3 + §1.2 généralisé).
+        assert!(
+            (sub.tau.tau_plus - tau_l2_expect.tau_plus).abs() < 1e-15,
+            "tau+ L2 = {} attendu {}",
+            sub.tau.tau_plus,
+            tau_l2_expect.tau_plus
+        );
+        assert!(
+            (sub.xi_down.xi_even - xi_b_expect).abs() < 1e-15,
+            "xi_even L1→L2 = {} attendu {}",
+            sub.xi_down.xi_even,
+            xi_b_expect
+        );
+        // 3. Exclusions coïncidents : colonne wall_left (cx == bx0 du strip)
+        // et ligne wall_bottom (cy == by0) absentes de la table.
+        for c in &sub.grid.coincident {
+            let cx = c.k_coarse % sub.grid.nx0;
+            let cy = c.k_coarse / sub.grid.nx0;
+            assert!(cx != sub.grid.bx0, "coïncident sur la colonne wall_left (cx={cx})");
+            assert!(cy != sub.grid.by0, "coïncident sur la ligne wall_bottom (cy={cy})");
+            // 4. Bande tanh : position physique du nœud L1 coïncident
+            // (x = bx0_L0 − 0.5 + 0.5·cx, convention nœuds L1 grid.rs),
+            // distance à la paroi ≤ 2 cellules L1 = 1 cellule L0 (le strip L2
+            // couvre 1 cellule L0, frontière tanh §0.1 : x ≈ 0.020·L pour
+            // nx0 = 64, i.e. ≤ 1·dx_base ; tolérance 1 dx_base pour nx0 petit).
+            let x_phys = block.grid.bx0 as f64 - 0.5 + 0.5 * cx as f64;
+            let dist = if block.hot_wall {
+                x_phys
+            } else {
+                (sim.nx0 - 1) as f64 - x_phys
+            };
+            assert!(
+                dist <= 1.0 + 1e-12,
+                "coïncident L2 hors bande tanh : dist = {dist} dx_base (cx={cx})"
+            );
+        }
+        // La table coïncidente n'est pas vide (au moins la colonne médiane).
+        assert!(!sub.grid.coincident.is_empty(), "table coïncidente L2 vide");
+        // Cohérence τ⁺ L1 (bloc parent) : 2·ν_L0.
+        assert!((tau_l1.tau_plus - (0.5 + 3.0 * 2.0 * nu0)).abs() < 1e-15);
+    }
+    println!(
+        "V6 mapping : nx2 = {} | coïncidents L2/bloc = {} | tau+ = {:.4}/{:.4}/{:.4} | xi_even A = {:.5}, B = {:.5}",
+        sim.blocks[0].sub.as_ref().unwrap().grid.nx1,
+        sim.blocks[0].sub.as_ref().unwrap().grid.coincident.len(),
+        sim.tau_coarse.tau_plus,
+        sim.tau_fine.tau_plus,
+        sim.blocks[0].sub.as_ref().unwrap().tau.tau_plus,
+        sim.xi.xi_even,
+        sim.blocks[0].sub.as_ref().unwrap().xi_down.xi_even,
+    );
+}
+
+/// V6.2 : stabilité courte de l'escalier 3 niveaux — 10 pas de cavité avec
+/// bandes L2 : masse conservée (1 ± 1e-6), bruit acoustique borné, et
+/// couverture du monitoring sur les 3 niveaux (le bruit global inclut L2).
+#[test]
+fn v6_cavity_3levels_stable_short() {
+    let mut sim = CavitySolver::new(32, 64, 4, 1.0e6, 0.71, 0.02, 42, 1, false, 3);
+    let n0 = (sim.nx0 * sim.ny0) as f64;
+    for step in 0..10 {
+        sim.step_cavity();
+        let masse = sim.coarse.rho.iter().sum::<f64>() / n0;
+        let n = sim.noise_stats();
+        println!(
+            "step {step} : masse = {masse:.12} | max|ρ−ρ̄| = {:.3e} | ifaces = {:.3e}",
+            n.max_rho_dev, n.max_rho_dev_ifaces
+        );
+        assert!((masse - 1.0).abs() < 1e-6, "masse non conservée (levels=3) : {masse}");
+        assert!(n.max_rho_dev >= n.max_rho_dev_ifaces, "bruit global ne couvre pas les interfaces");
+        assert!(
+            n.max_rho_dev_ifaces < 1.0,
+            "bruit d'interface explosé (levels=3) : {:.3e}",
+            n.max_rho_dev_ifaces
+        );
+        assert!(sim.check_guards().is_none(), "garde-fou déclenché (levels=3)");
+    }
 }

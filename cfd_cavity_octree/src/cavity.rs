@@ -647,6 +647,23 @@ pub fn nusselt_hot(coarse: &LbmLevel) -> f64 {
     avg_grad * (nx - 1) as f64 / DELTA_T
 }
 
+/// Nusselt paroi chaude mesuré sur la PREMIÈRE liaison (ix=0–1) — diagnostic
+/// uniquement (artefact mur, cf. crate uniforme `nusselt_hot_wall_link`) :
+/// permet la comparaison like-for-like avec le Nuc=1.3660 reporté par la run
+/// uniforme de référence (qui utilise cet estimateur).
+pub fn nusselt_hot_link0(coarse: &LbmLevel) -> f64 {
+    let nx = coarse.nx;
+    let ny = coarse.ny;
+    let mut sum = 0.0;
+    for iy in 0..ny {
+        let t0 = coarse.temp[iy * nx];
+        let t1 = coarse.temp[iy * nx + 1];
+        sum += (t1 - t0).abs();
+    }
+    let avg_grad = sum / ny as f64;
+    avg_grad * (nx - 1) as f64 / DELTA_T
+}
+
 /// Nusselt paroi froide (gradient entre ix=nx-3 et ix=nx-2, 2ᵉ liaison) —
 /// même échelle Lx que `nusselt_hot` (estimateur de la run de référence).
 pub fn nusselt_cold(coarse: &LbmLevel) -> f64 {

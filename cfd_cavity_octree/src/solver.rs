@@ -22,6 +22,15 @@
 //! - monitoring bruit acoustique max|ρ−ρ̄| global et aux interfaces (plan
 //!   §3.1, claim V2).
 //!
+//! Étape F (V6, plan §3.3) : escalier MULTI-NIVEAUX suivant la loi tanh du
+//! bord (§0.1) — chaque bloc L1 porte une bande L2 imbriquée [`NestedBlock`]
+//! (dx/4, 1 cellule L0 = 2 cellules L1 de large, pleine hauteur, collée à la
+//! paroi ; frontière tanh x ≈ 0.020 → nœud 1). Sous-pas télescopiques : 2
+//! sous-pas L1 par pas L0, 2 sous-pas L2 par sous-pas L1 (dt ∝ Δx, acoustic
+//! scaling) ; rescaling §1.2 généralisé par paire de niveaux adjacents
+//! ([`rescaling_factors_multilevel`]). `--levels 2` restaure la configuration
+//! V2 (bandes L2 désactivées).
+//!
 //! Choix documenté (plan §2.2, « pas de temps unique (fallback) ») : les
 //! tests V1 unitaires n'exécutent pas la boucle complète — ils testent les
 //! transferts d'interface isolés (pas unique, pas de subcycling) ; la
@@ -35,7 +44,10 @@ use crate::cavity::{
 };
 use crate::cavity::{NoiseStats, Rng, T_COLD, T_HOT};
 use crate::grid::{bilinear_stencil, OctreeGrid};
-use crate::interface::{coarse_to_fine, fine_to_coarse, rescaling_factors, RescalingFactors};
+use crate::interface::{
+    coarse_to_fine, fine_to_coarse, rescaling_factors, rescaling_factors_multilevel,
+    RescalingFactors,
+};
 use crate::lbm::{LbmLevel, RelaxTimes};
 use oxiphysics_lbm::lattice::D2Q9_VELOCITIES;
 use oxiphysics_lbm::thermal_lbm::{feq, geq};
@@ -101,7 +113,7 @@ impl OctreeSolver {
 
 /// Un bloc fin de cavité : grille quadtree + niveau fin + force Guo stockée.
 /// `hot_wall`/`cold_wall` indiquent si le bloc touche les parois isothermes
-/// physique (blo pleine hauteur collé à la paroi : colonne fine a=1 pour la
+/// physique (bloc pleine hauteur collé à la paroi : colonne fine a=1 pour la
 /// paroi chaude, a=nx1−2 pour la froide — a=0/a=nx1−1 sont des fantômes).
 pub struct CavityBlock {
     pub grid: OctreeGrid,
@@ -110,34 +122,70 @@ pub struct CavityBlock {
     fy: Vec<f64>,
     pub hot_wall: bool,
     pub cold_wall: bool,
+    /// Bande L2 imbriquée (V6, `--levels 3`) : None en config V2
+    /// (`--levels 2`).
+    pub sub: Option<NestedBlock>,
 }
 
-/// Solveur cavité DHC 2D sur octree 2 niveaux (Étape B, porte V2).
+/// Bande L2 imbriquée (V6, escalier tanh §0.1) : interface B dx/2 ⇄ dx/4.
+/// Le côté « grossier » de `grid` est la GRILLE L1 du bloc parent (nœuds
+/// grossiers = nœuds fins L1, espacement dx_base/2) ; le côté fin est le
+/// niveau L2 (dx_base/4). Bande de 1 cellule L0 de large (2 cellules L1),
+/// pleine hauteur, collée à la paroi verticale du bloc parent
+/// (frontière tanh x ≈ 0.020 → nœud 1 pour nx0 = 64).
+pub struct NestedBlock {
+    /// Grille d'interface B : côté grossier = grille L1 parent, côté fin = L2.
+    /// Exclusions coïncidents (V6) : colonne de bord gauche `wall_left=true`
+    /// (chaud : mur physique a=1 ; froid : bord d'interface a=n1−4 — même
+    /// régime symétrique, un seul nœud L1 médian restreint), mur bas
+    /// `wall_bottom=true` (b=1) ; le mur froid a=n1−2 et le mur haut
+    /// b=ny1−2 = bord du bloc sont hors plage, auto-exclus.
+    pub grid: OctreeGrid,
+    /// Champ L2 (dx/4, avec couches fantômes).
+    pub lvl: LbmLevel,
+    /// τ du niveau L2 (ν_lu = 4·ν_L0, §1.3).
+    pub tau: RelaxTimes,
+    /// Facteurs de rescaling L1→L2 (grossier→fin, §1.2 généralisé : facteur
+    /// temporel 2^-1 car dt_L2 = dt_L1/2, acoustic scaling).
+    pub xi_down: RescalingFactors,
+    /// Force Guo stockée par nœud (correction éq. (16)).
+    fy: Vec<f64>,
+    /// Côté du bloc parent (paroi chaude / froide) : CL thermiques et flags
+    /// de streaming du niveau L2.
+    pub hot_wall: bool,
+    pub cold_wall: bool,
+}
+
+/// Solveur cavité DHC 2D sur octree (Étape B, porte V2, plan §3.3) étendu
+/// V6 (Étape F) à l'escalier tanh 3 niveaux via [`CavityBlock::sub`].
+///
+/// Niveaux : L0 = noyau grossier `coarse` (domaine complet, dx_base) ;
+/// L1 = `blocks[i].fine` (dx_base/2, bande collée à la paroi) ;
+/// L2 = `blocks[i].sub` (dx_base/4, imbriqué dans L1, `--levels 3`).
 pub struct CavitySolver {
-    /// Dimensions du niveau grossier.
+    /// Dimensions de la grille de base (niveau L0, domaine complet).
     pub nx0: usize,
     pub ny0: usize,
-    /// Niveau grossier (domaine complet).
+    /// Niveau grossier L0 (domaine complet).
     pub coarse: LbmLevel,
-    /// Blocs fins (2 : paroi chaude et paroi froide, pleine hauteur).
+    /// Blocs fins L1 collés aux parois verticales (dx_base/2).
     pub blocks: Vec<CavityBlock>,
-    /// τ des niveaux (ν_lu,fin = 2·ν_lu,grossier, §1.3).
+    /// τ du niveau grossier L0.
     pub tau_coarse: RelaxTimes,
+    /// τ du niveau L1 (ν_lu = 2·ν_L0, §1.3).
     pub tau_fine: RelaxTimes,
-    /// Facteurs de rescaling d'interface (§1.2) — identiques pour les deux
-    /// blocs (les τ sont les mêmes).
+    /// Facteurs de rescaling L0→L1 (§1.2, facteur temporel 1/2).
     pub xi: RescalingFactors,
+    /// Nombre de niveaux (2 = config V2, 3 = escalier V6).
+    pub levels: usize,
     /// ν et α en unités lattice du niveau grossier (calage crate uniforme).
     pub nu_lu: f64,
     pub alpha_lu: f64,
-    /// Flottabilité en unités lattice par niveau (§1.3) :
-    /// beta_eff_niveau = Ra·ν_lu·α_lu/Lz_lu³. Le niveau fin a Lz_lu,fin =
-    /// 2·Lz_grossier (même hauteur physique, Δx/2) et ν_lu,fin = 2·ν_lu,
-    /// donc beta_eff_fin = Ra·(2ν)(2α)/(2Lz)³ = beta_eff_grossier/2 —
-    /// u_scale = √(beta_eff·Lz_lu) identique sur les deux niveaux.
+    /// Flottabilité en unités lattice du niveau L0 (§1.3).
     pub beta_eff_coarse: f64,
+    /// Flottabilité du niveau L1 (beta_eff_coarse/2, §1.3 acoustic scaling).
     pub beta_eff_fine: f64,
-    /// Force Guo stockée par nœud côté grossier (correction éq. (16)).
+    /// Force Guo stockée par nœud L0 (correction éq. (16)).
     fy_coarse: Vec<f64>,
     /// Threads de calcul (1 = mono-thread, N > 1 = rayon).
     pub jobs: usize,
@@ -153,6 +201,10 @@ impl CavitySolver {
     /// ν = (utarget·√Pr·Lz/(c·√Ra))^(2/3), c = 1.7, plancher ν ≥ 0.002
     /// (τ⁺ ≥ 0.506, tenable en TRT Λ = 3/16) ; α = ν/Pr ;
     /// beta_eff_coarse = Ra·ν·α/Lz³ avec Lz = ny0 − 1 (unités grossières).
+    ///
+    /// `levels` : 2 = configuration V2 (bandes L2 désactivées) ;
+    /// 3 = escalier tanh V6 (bande L2 dx/4 imbriquée, plan §3.3 Étape F).
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         nx0: usize,
         ny0: usize,
@@ -163,22 +215,40 @@ impl CavitySolver {
         seed: u64,
         jobs: usize,
         odd_exact: bool,
+        levels: usize,
     ) -> Self {
         assert!(bl_width >= 2, "largeur de BL fine >= 2 cellules grossieres requise");
         assert!(2 * bl_width < nx0, "les 2 blocs fins doivent laisser un noyau grossier");
+        assert!(
+            levels == 2 || levels == 3,
+            "levels doit valoir 2 (config V2) ou 3 (escalier tanh V6)"
+        );
 
         // --- Calage ν/α (crate uniforme, Lz en unités grossières) ---
         let _ = UTARGET; // documenté : utarget est le paramètre de calage
         let lz = (ny0 - 1) as f64;
         let nu = ((utarget * pr.sqrt() * lz / (C_SCALE * ra.sqrt())).powf(2.0 / 3.0)).max(0.002);
-        assert!(0.5 + 3.0 * nu > 0.505, "tau+ = {} trop proche de 0.5", 0.5 + 3.0 * nu);
         let alpha = nu / pr;
         let beta_eff_coarse = ra * nu * alpha / lz.powi(3);
 
-        // --- τ par niveau (§1.3 : ν_lu,fin = 2·ν_lu,grossier) ---
+        // --- τ par niveau (§1.3 : ν_lu,n = 2^(n−1)·ν_L0, Δx_n = dx_base/2^(n−1))
+        // L1 = 2ν, L2 = 4ν. Garde-fou τ⁺ (plan §1.3 : plancher tenable TRT).
         let tau_coarse = RelaxTimes::from_nu_alpha(nu, alpha);
         let tau_fine = RelaxTimes::from_nu_alpha(2.0 * nu, 2.0 * alpha);
-        let xi = rescaling_factors(&tau_coarse, &tau_fine, odd_exact);
+        let tau_sub = RelaxTimes::from_nu_alpha(4.0 * nu, 4.0 * alpha);
+        let tau_plus_min = [tau_coarse.tau_plus, tau_fine.tau_plus, tau_sub.tau_plus];
+        if let Some(tp) = tau_plus_min.iter().copied().find(|&t| t <= 0.506) {
+            eprintln!(
+                "WARNING : tau+ = {tp:.5} <= 0.506 au niveau le plus fin (plancher §1.3, risque d'instabilite TRT)"
+            );
+        }
+
+        // --- Facteurs de rescaling §1.2 généralisés (V6, par paire adjacente)
+        // : facteur temporel 1/substeps (acoustic scaling, dt ∝ Δx) —
+        // interface A : 2 sous-pas L1 par pas L0 ; interface B : 2 sous-pas
+        // L2 par sous-pas L1 (4 par pas L0). ---
+        let xi = rescaling_factors_multilevel(&tau_coarse, &tau_fine, 2, odd_exact);
+        let xi_sub = rescaling_factors_multilevel(&tau_fine, &tau_sub, 2, odd_exact);
 
         // --- Grilles : grossier domaine complet + 2 blocs fins pleine
         // hauteur collés aux parois verticales (plan §2.1) ---
@@ -198,18 +268,63 @@ impl CavitySolver {
         let coarse = LbmLevel::new(nx0, ny0);
         let mut blocks = Vec::with_capacity(2);
         for &(bx0, bx1, hot, cold) in &[
-            (0usize, bl_width, true, false),                      // paroi chaude (x=0)
-            (nx0 - 1 - bl_width, nx0 - 1, false, true),           // paroi froide (x=nx0-1)
+            (0usize, bl_width, true, false),            // paroi chaude (x=0)
+            (nx0 - 1 - bl_width, nx0 - 1, false, true), // paroi froide (x=nx0-1)
         ] {
             let grid = OctreeGrid::new(nx0, ny0, bx0, 0, bx1, ny0 - 1);
             let fine = LbmLevel::new(grid.nx1, grid.ny1);
             let n1 = grid.nx1 * grid.ny1;
+
+            // --- Bande L2 imbriquée (V6, `--levels 3`) ---
+            // Côté grossier = GRILLE L1 du bloc (nœuds grossiers = nœuds fins
+            // L1, espacement dx_base/2). Bande de 1 cellule L0 = 2 cellules L1
+            // de large, pleine hauteur, collée à la paroi verticale du bloc
+            // parent (frontière tanh x ≈ 0.020, §0.1) :
+            // - chaud : cellules [1, 3) — bord gauche a=1 = mur physique L1
+            //   (exclu des coïncidents via wall_left), bord droit a=3 = bord
+            //   du bloc (auto-exclu car hors [bx0,bx1) de la grille L1) ;
+            // - froid : cellules [n1−4, n1−2) — bord droit a=n1−2 = mur
+            //   physique L1 (hors plage, auto-exclu), bord gauche a=n1−4 =
+            //   bord du bloc (exclu via wall_left, régime symétrique du
+            //   chaud : un seul nœud L1 médian restreint) ;
+            // - vertical : cellules [1, ny1−2) — b=1 = mur bas physique L1
+            //   (exclu via wall_bottom), b=ny1−2 = mur haut (bord du bloc,
+            //   auto-exclu).
+            let sub = if levels >= 3 {
+                let (sbx0, sbx1) = if hot {
+                    (1usize, 3usize)
+                } else {
+                    (grid.nx1 - 4, grid.nx1 - 2)
+                };
+                // wall_left pour les DEUX strips : côté mur (chaud) ET côté
+                // interface (froid) excluent exactement 1 colonne de nœuds L1
+                // (mur physique ou bord d'interface) de la table coïncidente.
+                let sub_grid = OctreeGrid::new_nested(
+                    grid.nx1, grid.ny1, sbx0, 1, sbx1, grid.ny1 - 2,
+                    true, false, true, false,
+                );
+                let (sn1, sny1) = (sub_grid.nx1, sub_grid.ny1);
+                let sub_lvl = LbmLevel::new(sn1, sny1);
+                Some(NestedBlock {
+                    grid: sub_grid,
+                    lvl: sub_lvl,
+                    tau: tau_sub,
+                    xi_down: xi_sub,
+                    fy: vec![0.0; sn1 * sny1],
+                    hot_wall: hot,
+                    cold_wall: cold,
+                })
+            } else {
+                None
+            };
+
             blocks.push(CavityBlock {
                 grid,
                 fine,
                 fy: vec![0.0; n1],
                 hot_wall: hot,
                 cold_wall: cold,
+                sub,
             });
         }
 
@@ -221,6 +336,7 @@ impl CavitySolver {
             tau_coarse,
             tau_fine,
             xi,
+            levels,
             nu_lu: nu,
             alpha_lu: alpha,
             beta_eff_coarse,
@@ -233,10 +349,18 @@ impl CavitySolver {
         solver
     }
 
-    /// Nombre total de nœuds (grossier + blocs fins, avec fantômes).
+    /// Nombre total de nœuds (grossier + blocs fins + bandes L2, avec
+    /// fantômes).
     pub fn n_nodes_total(&self) -> usize {
         self.nx0 * self.ny0
-            + self.blocks.iter().map(|b| b.grid.nx1 * b.grid.ny1).sum::<usize>()
+            + self
+                .blocks
+                .iter()
+                .map(|b| {
+                    b.grid.nx1 * b.grid.ny1
+                        + b.sub.as_ref().map_or(0, |s| s.grid.nx1 * s.grid.ny1)
+                })
+                .sum::<usize>()
     }
 
     /// Initialise la cavité — copie de l'initialisation du crate uniforme
@@ -268,6 +392,10 @@ impl CavitySolver {
         }
         // Blocs fins : bilinéaire du champ grossier (le stencil clampé gère
         // les couches fantômes hors domaine, écrasées au 1ᵉʳ couplage).
+        // Bandes L2 : bilinéaire du champ grossier aux positions physiques
+        // exactes — un nœud L2 d'index (a2, b2) dans la grille L2 est à la
+        // position L1 (sbx0 − 0.5 + 0.5·a2, sby0 − 0.5 + 0.5·b2), elle-même
+        // à la position physique grossière (bx0 − 0.5 + 0.5·a1, ...).
         for block in &mut self.blocks {
             let nx1 = block.grid.nx1;
             for b in 0..block.grid.ny1 {
@@ -290,6 +418,31 @@ impl CavitySolver {
                     }
                 }
             }
+            if let Some(sub) = &mut block.sub {
+                let nx2 = sub.grid.nx1;
+                for b2 in 0..sub.grid.ny1 {
+                    for a2 in 0..nx2 {
+                        let k = b2 * nx2 + a2;
+                        let x_c = block.grid.bx0 as f64 - 0.5
+                            + 0.5 * (sub.grid.bx0 as f64 - 0.5 + 0.5 * a2 as f64);
+                        let y_c = block.grid.by0 as f64 - 0.5
+                            + 0.5 * (sub.grid.by0 as f64 - 0.5 + 0.5 * b2 as f64);
+                        let stencil = bilinear_stencil(x_c, y_c, nx0, ny0);
+                        let mut t = 0.0;
+                        for &(k_c, w) in &stencil {
+                            t += w * self.coarse.temp[k_c];
+                        }
+                        sub.lvl.rho[k] = 1.0;
+                        sub.lvl.ux[k] = 0.0;
+                        sub.lvl.uy[k] = 0.0;
+                        sub.lvl.temp[k] = t;
+                        for i in 0..9 {
+                            sub.lvl.f[k][i] = feq(i, 1.0, 0.0, 0.0);
+                            sub.lvl.g[k][i] = geq(i, t, 0.0, 0.0);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -306,7 +459,7 @@ impl CavitySolver {
     /// 5. moments des nœuds grossiers coïncidents recalculés depuis les
     ///    distributions injectées (la collision du pas suivant lit ρ, u, T).
     pub fn step_cavity(&mut self) {
-        // --- 1. Niveau grossier (force Guo, CL crate uniforme) ---
+        // --- 1. Niveau L0 (force Guo, CL crate uniforme) ---
         let beta_c = self.beta_eff_coarse;
         let jobs = self.jobs;
         collide_cavity(
@@ -322,83 +475,81 @@ impl CavitySolver {
         update_macroscopic_guo(&mut self.coarse, &self.fy_coarse, jobs);
         enforce_wall_velocity(&mut self.coarse);
 
-        // --- 2. Couplage grossier→fin AVANT les sous-pas fins (§1.2, Lagrava
+        // --- 2. Couplage A L0→L1 AVANT les sous-pas fins (§1.2, Lagrava
         // et al. 2015 : injection FRAÎCHE de l'état post-couplage grossier,
-        // pas de retard d'un pas complet) — fantômes côté interface
-        // préparés pour les 2 sous-pas ---
+        // pas de retard d'un pas complet) ---
         let xi = self.xi;
         let coarse = &self.coarse;
         for block in &mut self.blocks {
             coarse_to_fine(&block.grid, coarse, &mut block.fine, &xi);
         }
 
-        // --- 3. Blocs fins : 2 sous-pas chacun (dt_fin = dt_grossier/2) ---
+        // --- 3. Blocs : télescopage L1 (2 sous-pas, dt_L1 = dt_L0/2) + bande
+        // L2 imbriquée (V6, `--levels 3`) : L1 sp1 → couplage B frais →
+        // 2 sous-pas L2 (dt_L2 = dt_L1/2) → restriction L2→L1 → L1 sp2 →
+        // restriction L1→L0 ---
         let tau_fine = self.tau_fine;
         let beta_f = self.beta_eff_fine;
-        for block in &mut self.blocks {
+        let beta_sub = 0.25 * self.beta_eff_coarse; // §1.3 : /2 par niveau
+        for bi in 0..self.blocks.len() {
+            let block = &mut self.blocks[bi];
             let (wl, wr) = (block.hot_wall, block.cold_wall);
-            for _ in 0..2 {
-                collide_cavity(
-                    &mut block.fine,
-                    &tau_fine,
-                    beta_f,
-                    &mut block.fy,
-                    true,
-                    jobs,
-                );
-                // Bounce-back EXACT sur les parois physiques du bloc (haut/
-                // bas toujours, gauche/droite selon le mur collé) — sinon la
-                // paroi fine tire ses distributions entrantes d'une
-                // extrapolation grossière (no-slip corrompu).
-                stream_cavity_block(&mut block.fine, jobs, wl, wr, true, true);
-                apply_thermal_boundary_conditions_block(
-                    &mut block.fine,
-                    block.hot_wall,
-                    block.cold_wall,
-                );
-                update_macroscopic_guo(&mut block.fine, &block.fy, jobs);
-                enforce_wall_velocity_block(&mut block.fine, block.hot_wall, block.cold_wall);
-            }
-        }
 
-        // --- 4. Couplage fin→grossier (§1.2), par bloc ---
-        for block in &mut self.blocks {
+            // --- L1 sous-pas 1 : collide interior_only → stream block-aware
+            // avec bounce-back EXACT sur les parois physiques (haut/bas +
+            // mur collé) → CL thermiques block-aware → update → no-slip ---
+            collide_cavity(&mut block.fine, &tau_fine, beta_f, &mut block.fy, true, jobs);
+            stream_cavity_block(&mut block.fine, jobs, wl, wr, true, true);
+            apply_thermal_boundary_conditions_block(&mut block.fine, wl, wr);
+            update_macroscopic_guo(&mut block.fine, &block.fy, jobs);
+            enforce_wall_velocity_block(&mut block.fine, wl, wr);
+
+            // --- Bande L2 imbriquée (V6) ---
+            if let Some(sub) = &mut block.sub {
+                // Couplage B frais L1→L2 : injection des fantômes L2 depuis
+                // l'état L1 post-sous-pas 1 (Lagrava, injection fraîche).
+                let xi_down = sub.xi_down;
+                coarse_to_fine(&sub.grid, &block.fine, &mut sub.lvl, &xi_down);
+                let tau_sub = sub.tau;
+                for _ in 0..2 {
+                    collide_cavity(&mut sub.lvl, &tau_sub, beta_sub, &mut sub.fy, true, jobs);
+                    stream_cavity_block(&mut sub.lvl, jobs, wl, wr, true, true);
+                    apply_thermal_boundary_conditions_block(&mut sub.lvl, wl, wr);
+                    update_macroscopic_guo(&mut sub.lvl, &sub.fy, jobs);
+                    enforce_wall_velocity_block(&mut sub.lvl, wl, wr);
+                }
+                // Restriction L2→L1 (stencil 9 centré, 1/ξ_B §1.2) puis
+                // moments des nœuds L1 coïncidents recalculés (la collision
+                // du sous-pas 2 lit ρ, u, T).
+                fine_to_coarse(&sub.grid, &sub.lvl, &mut block.fine, &xi_down);
+                let idxs: Vec<usize> =
+                    sub.grid.coincident.iter().map(|c| c.k_coarse).collect();
+                refresh_moments_nodes(&mut block.fine, &idxs);
+            }
+
+            // --- L1 sous-pas 2 ---
+            collide_cavity(&mut block.fine, &tau_fine, beta_f, &mut block.fy, true, jobs);
+            stream_cavity_block(&mut block.fine, jobs, wl, wr, true, true);
+            apply_thermal_boundary_conditions_block(&mut block.fine, wl, wr);
+            update_macroscopic_guo(&mut block.fine, &block.fy, jobs);
+            enforce_wall_velocity_block(&mut block.fine, wl, wr);
+
+            // --- Restriction L1→L0 (stencil 9 centré, 1/ξ_A §1.2) ---
             fine_to_coarse(&block.grid, &block.fine, &mut self.coarse, &xi);
         }
 
-        // --- 5. Moments coïncidents grossiers recalculés (post-injection) ---
+        // --- 4. Moments coïncidents L0 recalculés (post-injection) ---
         let idxs: Vec<usize> = self
             .blocks
             .iter()
             .flat_map(|b| b.grid.coincident.iter().map(|c| c.k_coarse))
             .collect();
         let coarse = &mut self.coarse;
-        for k in idxs {
-            let mut rho = 0.0;
-            let mut mx = 0.0;
-            let mut my = 0.0;
-            let mut t = 0.0;
-            for i in 0..9 {
-                let fi = coarse.f[k][i];
-                rho += fi;
-                mx += D2Q9_VELOCITIES[i][0] as f64 * fi;
-                my += D2Q9_VELOCITIES[i][1] as f64 * fi;
-                t += coarse.g[k][i];
-            }
-            coarse.rho[k] = rho;
-            coarse.temp[k] = t;
-            if rho > f64::EPSILON {
-                coarse.ux[k] = mx / rho;
-                coarse.uy[k] = my / rho;
-            } else {
-                coarse.ux[k] = 0.0;
-                coarse.uy[k] = 0.0;
-            }
-        }
+        refresh_moments_nodes(coarse, &idxs);
     }
 
     /// Monitoring bruit acoustique d'un pas (LA porte V2, plan §3.1) :
-    /// max|ρ−ρ̄| global (tous les nœuds des deux niveaux, ρ̄ = moyenne
+    /// max|ρ−ρ̄| global (tous les nœuds des niveaux, ρ̄ = moyenne
     /// grossière) et aux interfaces (nœuds fantômes fins injectés + nœuds
     /// grossiers coïncidents). Ajout strictement par nœud ⇒ déterministe
     /// quel que soit --jobs.
@@ -406,7 +557,7 @@ impl CavitySolver {
         let n0 = self.nx0 * self.ny0;
         let rho_bar: f64 = self.coarse.rho.iter().sum::<f64>() / n0 as f64;
 
-        // Bruit global : tous les nœuds des deux niveaux.
+        // Bruit global : tous les nœuds des niveaux.
         let mut max_dev = 0.0f64;
         for &v in &self.coarse.rho {
             max_dev = max_dev.max((v - rho_bar).abs());
@@ -414,6 +565,11 @@ impl CavitySolver {
         for block in &self.blocks {
             for &v in &block.fine.rho {
                 max_dev = max_dev.max((v - rho_bar).abs());
+            }
+            if let Some(sub) = &block.sub {
+                for &v in &sub.lvl.rho {
+                    max_dev = max_dev.max((v - rho_bar).abs());
+                }
             }
         }
 
@@ -427,6 +583,16 @@ impl CavitySolver {
             for c in &block.grid.coincident {
                 let v = self.coarse.rho[c.k_coarse];
                 max_dev_iface = max_dev_iface.max((v - rho_bar).abs());
+            }
+            if let Some(sub) = &block.sub {
+                for gh in &sub.grid.ghosts {
+                    let v = sub.lvl.rho[gh.k_fine];
+                    max_dev_iface = max_dev_iface.max((v - rho_bar).abs());
+                }
+                for c in &sub.grid.coincident {
+                    let v = block.fine.rho[c.k_coarse];
+                    max_dev_iface = max_dev_iface.max((v - rho_bar).abs());
+                }
             }
         }
 
@@ -442,6 +608,9 @@ impl CavitySolver {
         let mut m = max_u(&self.coarse);
         for block in &self.blocks {
             m = m.max(max_u(&block.fine));
+            if let Some(sub) = &block.sub {
+                m = m.max(max_u(&sub.lvl));
+            }
         }
         m
     }
@@ -460,10 +629,41 @@ impl CavitySolver {
         let mut lvls = vec![&self.coarse];
         for block in &self.blocks {
             lvls.push(&block.fine);
+            if let Some(sub) = &block.sub {
+                lvls.push(&sub.lvl);
+            }
         }
         if !check_finite_levels(&lvls) {
             return Some("DIVERGENCE détectée (valeurs non finies).".to_string());
         }
         None
+    }
+}
+
+/// Recalcule ρ, u, T d'un sous-ensemble de nœuds depuis les distributions
+/// (post-injection d'un transfert fin→grossier — la collision du pas suivant
+/// lit ρ, u, T des moments, pas les distributions).
+fn refresh_moments_nodes(lvl: &mut LbmLevel, nodes: &[usize]) {
+    for &k in nodes {
+        let mut rho = 0.0;
+        let mut mx = 0.0;
+        let mut my = 0.0;
+        let mut t = 0.0;
+        for i in 0..9 {
+            let fi = lvl.f[k][i];
+            rho += fi;
+            mx += D2Q9_VELOCITIES[i][0] as f64 * fi;
+            my += D2Q9_VELOCITIES[i][1] as f64 * fi;
+            t += lvl.g[k][i];
+        }
+        lvl.rho[k] = rho;
+        lvl.temp[k] = t;
+        if rho > f64::EPSILON {
+            lvl.ux[k] = mx / rho;
+            lvl.uy[k] = my / rho;
+        } else {
+            lvl.ux[k] = 0.0;
+            lvl.uy[k] = 0.0;
+        }
     }
 }

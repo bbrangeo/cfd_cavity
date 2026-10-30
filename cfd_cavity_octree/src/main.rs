@@ -8,7 +8,7 @@
 use std::path::Path;
 use std::time::Instant;
 
-use cfd_cavity_octree::cavity::{nusselt_cold, nusselt_hot, nusselt_hot_fine};
+use cfd_cavity_octree::cavity::{nusselt_cold, nusselt_hot, nusselt_hot_fine, nusselt_hot_link0};
 use cfd_cavity_octree::solver::CavitySolver;
 
 /// Paramètres parsés (std::env, clé=valeur).
@@ -29,6 +29,9 @@ struct Args {
     seed: u64,
     /// Variante rescaling ξ_odd exacte (1/2·τ⁻_fin/τ⁻_grossier, plan §1.2).
     odd_exact: bool,
+    /// Nombre de niveaux : 2 = config V2 (L0+L1), 3 = escalier tanh V6
+    /// (bande L2 dx/4 imbriquée, Étape F).
+    levels: usize,
 }
 
 impl Default for Args {
@@ -49,6 +52,7 @@ impl Default for Args {
             jobs: 1,
             seed: 42,
             odd_exact: false,
+            levels: 2,
         }
     }
 }
@@ -71,6 +75,8 @@ Options (clé=valeur) :
   --seed <u64>            graine RNG                     [défaut: 42]
   --odd-exact             variante ξ_odd exacte ((1/2)·τ⁻_fin/τ⁻_grossier,
                           plan §1.2/§4) ; défaut : ξ_odd = 1/2
+  --levels <usize>        niveaux : 2 = config V2, 3 = escalier tanh V6
+                          (bande L2 dx/4, Étape F)  [défaut: 2]
 ";
 
 fn parse_args() -> Result<Args, String> {
@@ -108,6 +114,7 @@ fn parse_args() -> Result<Args, String> {
             "bl-width" | "bl_width" => {
                 args.bl_width = value.parse().map_err(|_| format!("--bl-width : entier attendu, lu '{value}'"))?
             }
+            "levels" => args.levels = value.parse().map_err(|_| format!("--levels : entier attendu, lu '{value}'"))?,
             "ra" => args.ra = value.parse().map_err(|_| format!("--ra : flottant attendu, lu '{value}'"))?,
             "pr" => args.pr = value.parse().map_err(|_| format!("--pr : flottant attendu, lu '{value}'"))?,
             "steps" => args.steps = value.parse().map_err(|_| format!("--steps : entier attendu, lu '{value}'"))?,
@@ -139,6 +146,12 @@ fn parse_args() -> Result<Args, String> {
     }
     if args.ra <= 0.0 || args.pr <= 0.0 {
         return Err("ra et pr doivent être > 0".into());
+    }
+    if !(args.levels == 2 || args.levels == 3) {
+        return Err("levels doit valoir 2 (config V2) ou 3 (escalier tanh V6)".into());
+    }
+    if args.levels == 3 && args.bl_width != 4 {
+        eprintln!("Note : escalier V6 conçu pour bl-width = 4 cellules grossières (frontières tanh §0.1) ; lu {}", args.bl_width);
     }
     if args.sample_every == 0 {
         return Err("sample-every doit être ≥ 1".into());
@@ -198,16 +211,28 @@ fn main() {
         args.seed,
         args.jobs,
         args.odd_exact,
+        args.levels,
     );
 
     println!(
-        "Unités réseau : nu = {:.6} | alpha = {:.6} | tau+ = {:.4}/{:.4} | beta_eff = {:.4e}/{:.4e} | {} nœuds (grossier {} + fins {})",
+        "Unités réseau : nu = {:.6} | alpha = {:.6} | tau+ = {:.4}/{:.4}{} | beta_eff = {:.4e}/{:.4e}{} | {} niveaux | {} nœuds (grossier {} + fins {})",
         sim.nu_lu,
         sim.alpha_lu,
         sim.tau_coarse.tau_plus,
         sim.tau_fine.tau_plus,
+        if args.levels == 3 {
+            format!("/{:.4}", sim.blocks[0].sub.as_ref().unwrap().tau.tau_plus)
+        } else {
+            String::new()
+        },
         sim.beta_eff_coarse,
         sim.beta_eff_fine,
+        if args.levels == 3 {
+            format!("/{:.4e}", 0.25 * sim.beta_eff_coarse)
+        } else {
+            String::new()
+        },
+        args.levels,
         sim.n_nodes_total(),
         args.nx0 * args.ny0,
         sim.n_nodes_total() - args.nx0 * args.ny0
@@ -229,6 +254,9 @@ fn main() {
     let mut nuc_sum = 0.0f64;
     let mut nuf_sum = 0.0f64;
     let mut nuc_n = 0usize;
+    // Estimateur like-for-like (1ère liaison ix=0–1, artefact mur — même
+    // estimateur que la run uniforme de référence Nuc=1.3660).
+    let mut nucl0_sum = 0.0f64;
     // Diagnostic Nu_fin : moyenné sur le bloc fin de paroi chaude (même
     // fenêtre), pour distinguer vrai champ vs corruption d'estimateur 2×2.
     let mut nufine_sum = 0.0f64;
@@ -247,6 +275,7 @@ fn main() {
         if step >= args.sample_start && (step - args.sample_start) % args.sample_every == 0 {
             nuc_sum += nusselt_hot(&sim.coarse);
             nuf_sum += nusselt_cold(&sim.coarse);
+            nucl0_sum += nusselt_hot_link0(&sim.coarse);
             nufine_sum += nusselt_hot_fine(&sim.blocks[hot_block_idx].fine, lx_coarse);
             nuc_n += 1;
         }
@@ -258,10 +287,11 @@ fn main() {
             noise_iface_max = noise_iface_max.max(noise.max_rho_dev_ifaces);
             let nuc = nusselt_hot(&sim.coarse);
             let nuf = nusselt_cold(&sim.coarse);
+            let nucl0 = nusselt_hot_link0(&sim.coarse);
             let nufine = nusselt_hot_fine(&sim.blocks[hot_block_idx].fine, lx_coarse);
             let msg = format!(
-                "step {:>7} | max_rho_dev = {:.3e} | max_rho_dev_ifaces = {:.3e} | masse = {:.6} | Nuc = {:.4} | Nuf = {:.4} | Nu_fin = {:.4} | max_u = {:.5}",
-                step, noise.max_rho_dev, noise.max_rho_dev_ifaces, noise.masse, nuc, nuf, nufine, sim.max_u_all()
+                "step {:>7} | max_rho_dev = {:.3e} | max_rho_dev_ifaces = {:.3e} | masse = {:.6} | Nuc = {:.4} | Nuc_link0 = {:.4} | Nuf = {:.4} | Nu_fin = {:.4} | max_u = {:.5}",
+                step, noise.max_rho_dev, noise.max_rho_dev_ifaces, noise.masse, nuc, nucl0, nuf, nufine, sim.max_u_all()
             );
             println!("{msg}");
             log_lines.push(msg);
@@ -290,16 +320,23 @@ fn main() {
     }
     let nuc_mean = nuc_sum / nuc_n as f64;
     let nuf_mean = nuf_sum / nuc_n as f64;
+    let nucl0_mean = nucl0_sum / nuc_n as f64;
     let nufine_mean = nufine_sum / nuc_n as f64;
 
-    // --- Référence uniforme (output/ra1e6_full) et verdict porte V2 ---
-    let nuc_ref = 1.3660; // crate uniforme Ra=1e6 (64×256, 200k pas)
+    // --- Références et verdict porte V2 ---
+    // Like-for-like (2ᵉ liaison, estimateur Nuc standard) : baseline
+    // uniforme Ra=1e6 = 2.3585 (output/ra1e6_full, grad 2ᵉ liaison).
+    // 1ʳᵉ liaison (estimateur nusselt_hot_link0, artefact mur) : 1.3660.
+    let nuc_ref = 2.3585;
+    let nucl0_ref = 1.3660;
     let ecart_pct = ((nuc_mean - nuc_ref) / nuc_ref).abs() * 100.0;
     let portee_v2 = ecart_pct <= 5.0;
 
     let summary = format!(
         "--- Bilan (moyenné sur {nuc_n} échantillons, fenêtre {}→{}) ---
-Nuc = {nuc_mean:.4} | Nuf = {nuf_mean:.4} | Nu_fin (bloc chaud) = {nufine_mean:.4} | référence uniforme Ra=1e6 = {nuc_ref} | écart = {ecart_pct:.1} %
+Nuc (2ᵉ liaison) = {nuc_mean:.4} | écart like-for-like vs {nuc_ref} = {ecart_pct:.1} %
+Nuc_link0 (1ʳᵉ liaison) = {nucl0_mean:.4} | Nuf = {nuf_mean:.4} | Nu_fin (bloc chaud) = {nufine_mean:.4}
+Références uniforme Ra=1e6 : 2ᵉ liaison = {nuc_ref} | 1ʳᵉ liaison = {nucl0_ref}
 Bruit acoustique (max sur la run) : max|ρ−ρ̄| = {noise_max:.3e} | interfaces = {noise_iface_max:.3e}
 PORTE V2 (écart Nuc ≤ 5 %) : {}",
         args.sample_start,

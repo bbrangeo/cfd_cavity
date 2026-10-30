@@ -5,7 +5,10 @@
 //! Table de voisinage inter-niveaux PRÉCALCULÉE à l'init (plan §2.1 : jamais
 //! pendant la boucle temps — déterminisme) :
 //! - `ghosts` : nœuds fantômes fins, stencil bilinéaire grossier (grossier→fin) ;
-//! - `coincident` : nœuds grossiers coïncidents, 2×2 nœuds fins (fin→grossier).
+//! - `coincident` : nœuds grossiers coïncidents, stencil de restriction 9
+//!   nœuds fins ¼-½-¼ ⊗ ¼-½-¼ centré sur le nœud grossier (fin→grossier,
+//!   Lagrava et al. 2015 ; l'ancien 2×2 décalé à (cx+0.25, cy+0.25) est
+//!   corrigé, biais +¼ cellule confirmé en V2).
 //!
 //! Convention de position : nœuds grossiers aux coordonnées entières (i, j),
 //! espacement 1. Nœuds fins intérieurs à (bx0 + k/2, by0 + m/2), k = 0..2fw
@@ -32,13 +35,15 @@ pub struct GhostEntry {
     pub stencil: [(usize, f64); 4],
 }
 
-/// Entrée de la table fin→grossier : un nœud grossier coïncident + ses 4
-/// nœuds fins (2×2, moyenne à poids égal 1/4, plan §1.2).
+/// Entrée de la table fin→grossier : un nœud grossier coïncident + son
+/// stencil de restriction 9 nœuds fins (séparable ¼-½-¼ ⊗ ¼-½-¼, centré sur
+/// le nœud grossier — stencil Lagrava ; l'ancien 2×2 {x, x+0.5}² était
+/// décalé de +¼ cellule vers (cx+0.25, cy+0.25), biais confirmé en V2).
 pub struct CoarseEntry {
     /// Index du nœud grossier (k = iy0 * nx0 + ix0).
     pub k_coarse: usize,
-    /// Les 4 nœuds fins coïncidents {x, x+0.5} × {y, y+0.5}.
-    pub fine_idx: [usize; 4],
+    /// 9 (index fin, poids), somme des poids = 1, centré sur (cx, cy).
+    pub stencil: [(usize, f64); 9],
 }
 
 /// Grille quadtree 2 niveaux avec tables de voisinage précalculées.
@@ -67,6 +72,46 @@ impl OctreeGrid {
     /// raffinée, plan §2.1 « parois toujours au niveau fin max ») — les
     /// stencils hors domaine sont alors extrapolés (voir `bilinear_stencil`).
     pub fn new(nx0: usize, ny0: usize, bx0: usize, by0: usize, bx1: usize, by1: usize) -> Self {
+        Self::build(nx0, ny0, bx0, by0, bx1, by1, false, false, false, false)
+    }
+
+    /// Variante interface imbriquée (V6, interface B dx/2 ⇄ dx/4) : le côté
+    /// « grossier » est une grille DÉJÀ raffinée (bande L1) dont certains
+    /// bords du bloc sont des parois PHYSIQUES (mur collé + haut/bas). Les
+    /// nœuds grossiers de paroi (colonne a=1 du strip chaud, a=nx0−2 du
+    /// strip froid, lignes b=1 et b=ny0−2) sont EXCLUS de la table
+    /// coïncidente : leurs CL (isotherme/adiabatique/no-slip) restent
+    /// exactes, jamais écrasées par le moyennage L2.
+    pub fn new_nested(
+        nx0: usize,
+        ny0: usize,
+        bx0: usize,
+        by0: usize,
+        bx1: usize,
+        by1: usize,
+        wall_left: bool,
+        wall_right: bool,
+        wall_bottom: bool,
+        wall_top: bool,
+    ) -> Self {
+        Self::build(nx0, ny0, bx0, by0, bx1, by1, wall_left, wall_right, wall_bottom, wall_top)
+    }
+
+    /// Constructeur commun : tables précalculées + exclusions de paroi.
+    /// `wall_*` : le bord correspondant du bloc est une paroi physique du
+    /// côté grossier (ses nœuds sont exclus du transfert fin→grossier).
+    fn build(
+        nx0: usize,
+        ny0: usize,
+        bx0: usize,
+        by0: usize,
+        bx1: usize,
+        by1: usize,
+        wall_left: bool,
+        wall_right: bool,
+        wall_bottom: bool,
+        wall_top: bool,
+    ) -> Self {
         assert!(bx1 <= nx0 && by1 <= ny0, "bloc fin hors domaine grossier");
         assert!(bx0 < bx1 && by0 < by1, "bloc fin vide");
         let fw = bx1 - bx0;
@@ -95,26 +140,51 @@ impl OctreeGrid {
         }
 
         // --- Table fin→grossier : nœuds grossiers coïncidents du bloc,
-        // 2×2 nœuds fins {x, x+0.5} × {y, y+0.5} (moyenne §1.2). Les nœuds
-        // SUR le bord physique du domaine sont exclus (Étape B : les CL de
-        // paroi grossières — isotherme/adiabatique/no-slip — y restent
-        // exactes, jamais écrasées par le moyennage fin).
+        // stencil de restriction 9 nœuds fins (séparable ¼-½-¼ ⊗ ¼-½-¼
+        // centré sur le nœud grossier, Lagrava et al. 2015) :
+        //   x ∈ {cx−0.5, cx, cx+0.5} ⊗ y ∈ {cy−0.5, cy, cy+0.5},
+        // poids (¼,½,¼) par dimension — centré EXACTEMENT sur (cx, cy),
+        // contrairement à l'ancien 2×2 {x, x+0.5}² centré à (cx+0.25,
+        // cy+0.25) (biais +¼ cellule confirmé en V2). Exclusions :
+        // 1. nœuds SUR le bord de la grille grossière (Étape B : pour
+        //    l'interface A ce sont les parois du domaine ; pour l'interface
+        //    B ce sont les couches fantômes de la grille L1) ;
+        // 2. nœuds de PAROI physique du côté grossier (interface B, V6 :
+        //    mur collé + haut/bas — CL exactes préservées).
         let mut coincident = Vec::new();
         for cy in by0..by1 {
             for cx in bx0..bx1 {
                 if cx == 0 || cx + 1 == nx0 || cy == 0 || cy + 1 == ny0 {
                     continue;
                 }
-                let a = 2 * (cx - bx0) + 1; // nœud fin coïncident (x = cx)
+                if (wall_left && cx == bx0)
+                    || (wall_right && cx + 1 == bx1)
+                    || (wall_bottom && cy == by0)
+                    || (wall_top && cy + 1 == by1)
+                {
+                    continue;
+                }
+                // Centre du stencil : nœud fin coïncident (x = cx, y = cy),
+                // indices fins a = 2·(cx−bx0)+1, b = 2·(cy−by0)+1. Le stencil
+                // s'étend sur les nœuds a−1..a+1 : pour un bloc collé au mur
+                // c'est la couche fantôme d'interface (injectée par le
+                // couplage §1.2 avant la restriction) ; sinon un nœud fin
+                // intérieur.
+                let a = 2 * (cx - bx0) + 1;
                 let b = 2 * (cy - by0) + 1;
+                let w = [0.25f64, 0.5, 0.25];
+                let mut stencil = [(0usize, 0.0f64); 9];
+                let mut idx = 0;
+                for (jb, &wy) in w.iter().enumerate() {
+                    for (ja, &wx) in w.iter().enumerate() {
+                        let kf = (b + jb - 1) * nx1 + (a + ja - 1);
+                        stencil[idx] = (kf, wx * wy);
+                        idx += 1;
+                    }
+                }
                 coincident.push(CoarseEntry {
                     k_coarse: cy * nx0 + cx,
-                    fine_idx: [
-                        b * nx1 + a,
-                        b * nx1 + a + 1,
-                        (b + 1) * nx1 + a,
-                        (b + 1) * nx1 + a + 1,
-                    ],
+                    stencil,
                 });
             }
         }

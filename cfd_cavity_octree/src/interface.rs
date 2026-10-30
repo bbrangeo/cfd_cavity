@@ -101,6 +101,35 @@ pub fn rescale_fneq_inverse(fneq: &[f64; 9], xi: &RescalingFactors) -> [f64; 9] 
     out
 }
 
+/// Calcule les facteurs de rescaling GÉNÉRALISÉS pour un couple de niveaux
+/// adjacents d'un escalier multi-niveaux (V6) : chaque facteur combine le
+/// ratio des pas de temps (2^k, k = nombre de sous-pas du niveau fin par
+/// pas grossier) et le ratio des τ (§1.2) :
+///   xi_even    = 2^-k · τ⁺_fin/τ⁺_grossier   (stress, partie paire) ;
+///   xi_odd     = 2^-k  (approx., V1) ou 2^-k · τ⁻_fin/τ⁻_grossier (exact) ;
+///   xi_thermal = 2^-k · τ_t,fin/τ_t,grossier (scalaire BGK).
+/// Pour k = 1 (interface 2:1 classique), identique à [`rescaling_factors`].
+pub fn rescaling_factors_multilevel(
+    tau_coarse: &RelaxTimes,
+    tau_fine: &RelaxTimes,
+    substeps: usize,
+    odd_exact: bool,
+) -> RescalingFactors {
+    let dt_factor = 1.0 / (substeps as f64);
+    let xi_even = dt_factor * tau_fine.tau_plus / tau_coarse.tau_plus;
+    let xi_odd = if odd_exact {
+        dt_factor * tau_fine.tau_minus / tau_coarse.tau_minus
+    } else {
+        dt_factor
+    };
+    let xi_thermal = dt_factor * tau_fine.tau_t / tau_coarse.tau_t;
+    RescalingFactors {
+        xi_even,
+        xi_odd,
+        xi_thermal,
+    }
+}
+
 /// Transfert grossier→fin : injection des nœuds fantômes fins (§1.2).
 /// Pour chaque fantôme : interpolation bilinéaire de ρ, u, T et du f^neq
 /// reconstruit côté grossier, rescaling (1/2)·ξ, puis
@@ -140,36 +169,32 @@ pub fn coarse_to_fine(grid: &OctreeGrid, coarse: &LbmLevel, fine: &mut LbmLevel,
     refresh_moments(fine, &grid.ghosts.iter().map(|gh| gh.k_fine).collect::<Vec<_>>());
 }
 
-/// Transfert fin→grossier : moyenne 2×2 + 1/ξ (§1.2), injection sur les
-/// nœuds grossiers coïncidents du bloc.
+/// Transfert fin→grossier : stencil de restriction 9 nœuds fins (¼-½-¼ ⊗
+/// ¼-½-¼ centré sur le nœud grossier, Lagrava) + 1/ξ (§1.2), injection sur
+/// les nœuds grossiers coïncidents du bloc.
 pub fn fine_to_coarse(grid: &OctreeGrid, fine: &LbmLevel, coarse: &mut LbmLevel, xi: &RescalingFactors) {
     for cell in &grid.coincident {
         let k_c = cell.k_coarse;
-        // --- Moyenne des moments sur les 2×2 nœuds fins coïncidents ---
+        // --- Moyenne pondérée des moments sur le stencil fin (somme des
+        // poids = 1, centré sur le nœud grossier) ---
         let mut rho = 0.0;
         let mut ux = 0.0;
         let mut uy = 0.0;
         let mut temp = 0.0;
-        for &k_f in &cell.fine_idx {
-            rho += fine.rho[k_f];
-            ux += fine.ux[k_f];
-            uy += fine.uy[k_f];
-            temp += fine.temp[k_f];
+        for &(k_f, w) in &cell.stencil {
+            rho += w * fine.rho[k_f];
+            ux += w * fine.ux[k_f];
+            uy += w * fine.uy[k_f];
+            temp += w * fine.temp[k_f];
         }
-        rho *= 0.25;
-        ux *= 0.25;
-        uy *= 0.25;
-        temp *= 0.25;
         // --- Non-équilibre fin moyenné puis rescalé par 1/ξ ---
         let mut fneq_avg = [0.0f64; 9];
         let mut gneq_avg = [0.0f64; 9];
         for i in 0..9 {
-            for &k_f in &cell.fine_idx {
-                fneq_avg[i] += fine.f[k_f][i] - feq(i, fine.rho[k_f], fine.ux[k_f], fine.uy[k_f]);
-                gneq_avg[i] += fine.g[k_f][i] - geq(i, fine.temp[k_f], fine.ux[k_f], fine.uy[k_f]);
+            for &(k_f, w) in &cell.stencil {
+                fneq_avg[i] += w * (fine.f[k_f][i] - feq(i, fine.rho[k_f], fine.ux[k_f], fine.uy[k_f]));
+                gneq_avg[i] += w * (fine.g[k_f][i] - geq(i, fine.temp[k_f], fine.ux[k_f], fine.uy[k_f]));
             }
-            fneq_avg[i] *= 0.25;
-            gneq_avg[i] *= 0.25;
         }
         let fneq_gross = rescale_fneq_inverse(&fneq_avg, xi);
         // --- Injection côté grossier ---
