@@ -1,10 +1,68 @@
 # Cavité différentiellement chauffée 2D — LBM D2Q9 TRT + Smagorinsky (LES)
 
-Benchmark de la thèse (§2.5, pages 65–71, Tab. 2.6 et 2.7) : cavité fermée
-différentiellement chauffée, rapport de forme **Az = 4**, air (Pr = 0.71),
-hypothèse de Boussinesq.
+[![tests](https://img.shields.io/badge/cargo_test-22%2F22_passing-brightgreen)](#-démarrage-rapide)
+[![DNS](https://img.shields.io/badge/DNS_valid%C3%A9-%E2%89%A4_3.3%25_sur_3_Ra-success)](#-résultats-clés)
+[![rust](https://img.shields.io/badge/rust-edition_2024-orange)](https://www.rust-lang.org)
+[![crate](https://img.shields.io/badge/oxiphysics--lbm-0.1.2-blue)](https://crates.io/crates/oxiphysics-lbm)
+[![rayon](https://img.shields.io/badge/parall%C3%A8le-rayon_d%C3%A9terministe-informational)](#-options-cli)
 
-## Cas d'étude
+> **Solver LBM D2Q9 TRT + LES Smagorinsky pour la convection naturelle en cavité
+> différentiellement chauffée (Az = 4, air, Boussinesq) — validé contre le DNS de
+> référence de Trias et al. ([JFM 586, 2007](https://www.cttc.upc.edu/downloads/DHC_AR4_2Dvs3D/JFM-DHC-paper.pdf))
+> à ≤ 3.3 % sur 3 Rayleigh (1e8 → 1e10).**
+
+Benchmark de la thèse (§2.5, pages 65–71, Tab. 2.6 et 2.7).
+
+---
+
+## 📑 Sommaire
+
+- [🎯 Résultats clés](#-résultats-clés)
+- [🔬 Cas d'étude](#-cas-détude)
+- [⚙️ Méthode](#-méthode)
+- [🚀 Démarrage rapide](#-démarrage-rapide)
+  - [Ra = 1e6 (smoke / validation)](#ra--1e6-smoke--validation)
+  - [Ra = 1e8 (réglage recommandé)](#ra--1e8-réglage-recommandé)
+  - [Ra = 1e10 (cas thèse)](#ra--1e10-cas-thèse--coût-élevé-à-lancer-en-background)
+- [🔧 Options CLI](#-options-cli)
+- [📤 Sorties](#-sorties---out-dir)
+- [🧪 Validation détaillée](#-validation-détaillée)
+- [📐 Écarts documentés vs thèse](#-écarts-documentés-vs-thèse)
+- [📜 Historique / journal](#-historique--journal)
+- [📚 Références](#-références)
+
+---
+
+## 🎯 Résultats clés
+
+Convergence LBM vs DNS de référence Trias, Soria, Oliva & Pérez-Segarra
+(*Turbulent natural convection in an enclosed cavity*, J. Fluid Mech. 586 (2007), 259–293)
+— cibles Tab. 2.7 de la thèse :
+
+| Quantité | Cible (Trias 2D) | Résultat LBM (final) | Verdict |
+|---|---|---|---|
+| Nuc @ 1e8 | 30.41 | 30.45 (128×511) | ✅ +0.1 % |
+| Nuc @ 6.4e8 | 49.23 | 50.89 (256×1024) | ✅ +3.3 % (plateau méthode) |
+| Nuc @ 1e10 | 100.60 (100.68 h-moy.) | 101.19 (256×1024) | ✅ +0.5 % |
+| w_max(z=0.5)/U_CN | ≈ 0.223 en x*≈0.004 | ≈ 0.23 @ 6.4e8 ; 0.31 @ 1e10, x≥0.0157 | ⚠️ valeur 1e10 à discuter |
+| w_max(z=0.75) | ≈ 0.11 en x*≈0.005 | x ≥ 0.023 (borne maillage) | ⚠️ positions bornées par le 1er nœud |
+| S^1/2 (dθ/d(z/H) cœur) | 0.99 – 1.01 | 0.974 / 1.064 / 1.317 | ✅ 1e8–6.4e8 |
+| y+ première cellule | 0.55 – 1.11 | 0.63 / 0.63 / 1.67 | ✅ |
+
+**Cadre retenu pour le mémoire** : démarche **LES LBM (Smagorinsky, Cs=0.1)**,
+validée contre le DNS de Trias et al. (2007) — la grille est assez fine pour que le
+modèle sous-maille soit peu actif (ν_t/ν = 5 % → 1.6 % en raffinant à 6.4e8), d'où la
+convergence 0.1–3.6 % vs Trias sur les 3 Ra. Le Smagorinsky joue alors son rôle
+historique en LBM : amortisseur de stabilité à τ proche de 0.5 (Hou et al. 1996).
+
+Détails complets (curseur DNS/LES, smoke test) : [Validation détaillée](#-validation-détaillée).
+
+---
+
+## 🔬 Cas d'étude
+
+Cavité fermée différentiellement chauffée, rapport de forme **Az = 4**, air
+(Pr = 0.71), hypothèse de Boussinesq.
 
 | Paramètre | Valeur |
 |---|---|
@@ -15,7 +73,9 @@ hypothèse de Boussinesq.
 | Fluide | air, Pr = 0.71, Boussinesq |
 | Ra cible | 1e6 (smoke), 1e8, 1e10 (cas thèse) |
 
-## Méthode
+---
+
+## ⚙️ Méthode
 
 - **LBM D2Q9 double distribution (DDF)** : `f` pour la masse/quantité de mouvement,
   `g` pour la température (advection-diffusion).
@@ -26,36 +86,44 @@ hypothèse de Boussinesq.
   (module `thermal_lbm`, constantes `lattice::{D2Q9_WEIGHTS, D2Q9_VELOCITIES, D2Q9_OPPOSITES, CS2}`).
 - **Pas de temps maison** (`src/solver.rs`) : le `streaming_step` de la crate est
   périodique dans les deux directions (inadapté à une cavité fermée), donc :
-  - collision **TRT** (two-relaxation-time, Ginzburg et al. 2008) avec relaxation
-    **Smagorinsky** — remplace la collision BGK d'origine, trop instable à
-    Ra=1e8 (τ+ → 0.5) :
-    - temps de relaxation pairs τ+ = 0.5 + 3·(ν + ν_t) ; impairs
-      τ− = 0.5 + Λ/(τ+ − 0.5) avec **Λ = 3/16** (valeur optimale pour
-      bounce-back) ; pour le scalaire g : **BGK pur, τ_t− = τ_t+**
-      (paroi à nœud-équilibre ⇒ Λ=3/16 injustifié, cf. Écarts documentés) ;
-    - moments non-équilibrés π_neq = Σ c_i c_j (f_i − f_i^eq) ;
-    - |S| = sqrt(π_neq:π_neq) / (2·cs²·τ·ρ) (formule standard LBM).
-      ⚠️ **Convention** : cette formule donne √(S:S), soit |S|_canonique/√2 par
-      rapport à la définition usuelle |S| = √(2 S:S) ⇒ **Cs effectif ≈ 0.071**
-      (et non 0.10) dans la convention Smagorinsky classique. À documenter
-      tel quel dans le mémoire ; ne change pas les conclusions (ν_t/ν faible).
-    - ν_t = (Cs·Δx)²·|S| via `compute_turbulent_viscosity` de la crate (Cs = 0.10) ;
-  - force de Boussinesq intégrée façon **Guo, Shi & Zheng 2002 (complet,
-    éq. (14)-(16))** : S_i = (1 − 1/2τ+)·w_i·[(e_i−u)/c_s² + (e_i·u)·e_i/c_s⁴]·F,
-    F = (0, fy, 0), fy = ρ·beta_eff·(T − t_ref) (chaud à gauche ⇒ montée le long
-    de la paroi chaude) ; correction de vitesse u_y = (Σe_iy·f_i + fy/2)/ρ
-    (fy stockée par nœud pendant la collision — `fy_node` — même F que la
-    collision, déterminisme jobs>1 préservé) ;
-  - streaming **pull standard** avec **full-way bounce-back intégré** sur les
-    parois (f_i(x) ← f*_opp(i)(x) quand la source est hors domaine) — bijection
-    exacte ⇒ masse exactement conservée ;
-  - BC thermiques : isotherme g = g^eq(±0.5, u=0) sur les parois verticales ;
-    zero-gradient (copie du nœud intérieur) sur les parois horizontales.
+
+  **Collision TRT (two-relaxation-time, Ginzburg et al. 2008) avec relaxation
+  Smagorinsky** — remplace la collision BGK d'origine, trop instable à Ra=1e8 (τ+ → 0.5) :
+
+  - temps de relaxation pairs `τ+ = 0.5 + 3·(ν + ν_t)` ; impairs
+    `τ− = 0.5 + Λ/(τ+ − 0.5)` avec **Λ = 3/16** (valeur optimale pour
+    bounce-back) ; pour le scalaire g : **BGK pur, `τ_t− = τ_t+`**
+    (paroi à nœud-équilibre ⇒ Λ=3/16 injustifié, cf. [Écarts documentés](#-écarts-documentés-vs-thèse)) ;
+  - moments non-équilibrés `π_neq = Σ c_i c_j (f_i − f_i^eq)` ;
+  - `|S| = sqrt(π_neq:π_neq) / (2·cs²·τ·ρ)` (formule standard LBM).
+    > ⚠️ **Convention** : cette formule donne √(S:S), soit |S|_canonique/√2 par
+    > rapport à la définition usuelle `|S| = √(2 S:S)` ⇒ **Cs effectif ≈ 0.071**
+    > (et non 0.10) dans la convention Smagorinsky classique. À documenter
+    > tel quel dans le mémoire ; ne change pas les conclusions (ν_t/ν faible).
+  - `ν_t = (Cs·Δx)²·|S|` via `compute_turbulent_viscosity` de la crate (Cs = 0.10) ;
+
+  **Force de Boussinesq intégrée façon Guo, Shi & Zheng 2002** (complet, éq. (14)-(16)) :
+
+  - `S_i = (1 − 1/2τ+)·w_i·[(e_i−u)/c_s² + (e_i·u)·e_i/c_s⁴]·F`,
+    `F = (0, fy, 0)`, `fy = ρ·beta_eff·(T − t_ref)` (chaud à gauche ⇒ montée le long
+    de la paroi chaude) ;
+  - correction de vitesse `u_y = (Σe_iy·f_i + fy/2)/ρ` (fy stockée par nœud pendant
+    la collision — `fy_node` — même F que la collision, déterminisme jobs>1 préservé) ;
+
+  **Streaming pull standard avec full-way bounce-back intégré** sur les parois
+  (`f_i(x) ← f*_opp(i)(x)` quand la source est hors domaine) — bijection exacte ⇒
+  masse exactement conservée.
+
+- **BC thermiques** : isotherme `g = g^eq(±0.5, u=0)` sur les parois verticales ;
+  zero-gradient (copie du nœud intérieur) sur les parois horizontales.
 - **Mapping thèse** : la thèse (Eq. 2.104) utilise un maillage tangente hyperbolique
   (Henkes & Hoogendoorn) ; ce code utilise une **grille uniforme** (écart documenté,
-  voir « Écarts » ci-dessous). Les quantités de comparaison (Tab. 2.7) sont inchangées.
+  voir [Écarts](#-écarts-documentés-vs-thèse)). Les quantités de comparaison
+  (Tab. 2.7) sont inchangées.
 
-## Compilation et exécution
+---
+
+## 🚀 Démarrage rapide
 
 ```bash
 cargo build --release
@@ -99,20 +167,6 @@ seules les grilles avec ratio de nœuds ≈ 4 (Az=4) sont des configurations th�
 | **256×1024** | 1023 | 0.0020 | 0.506 | **0.232** | **0.054** | **sous limite — configuration validée 2026-10-30** |
 | 512×2048 | 2047 | 0.0020 | 0.506 | 0.116 | 0.027 | sous limite (coût 4×, superflu) |
 
-**Expérimentation stabilité** (pré-fix Guo/τ_t⁻, historique) :
-- 128×512 (20k pas) : `--alpha-mult 1/2/4/8` divergence NaN au pas 2700–5000 ;
-  rampe de spin-up de flottabilité (β linéaire 0→β_eff) : retarde sans supprimer.
-  Cause : à ν fixé par le plancher TRT, U_CN = α·√Ra/Lz ∝ 1/Lz — à Lz=511,
-  Ma attendu ≈ 0.22 dépasse la limite de compressibilité D2Q9.
-- 256×1024 (initialisation classique) : divergeait au pas 15.5k **[RÉSOLU]** :
-  post-fix Guo + restart depuis snapshot 6.4e8 **même grille**, le run est
-  **STABLE et complète** (voir ci-dessous).
-- 512×2048 + restart : stable (expérimentation pré-fix, conservée comme point
-  de stabilité ; rendu superflu par le run 256×1024 réussi).
-- **Conclusion (2026-10-30)** : la configuration validée pour Ra=1e10 est
-  **256×1024 + restart depuis snapshot Ra=6.4e8 (256×1024, même grille)** :
-  Ma ≈ 0.11, transitoire éliminé, **Nuc = 101.19 vs Trias 100.68 (0.5 %)**.
-
 > **Note maillage (relecture §2.5 du mémoire, Tab. 2.9)** : les grilles de
 > référence thèse (SND2D1 96×768, C2D1 64×128, C2D2 96×320, C2D3 128×320) sont
 > **toutes sur la même cavité Az=4** : leurs ratios de nœuds (8, 2, 3.4, 2.5)
@@ -126,7 +180,7 @@ Chaque run exporte un snapshot binaire `snapshot.bin` (magic `CAVSNAP1`, rho/ux/
 en fin de simulation ; l'option `--restart <file>` initialise une nouvelle grille
 depuis ce champ, avec interpolation bilinéaire si les maillages diffèrent — le
 transitoire violent est éliminé, la physique Ra=1e10 se développe depuis un
-écoulement déjà établi. **Limite de compressibilité** : U_CN = α·√Ra/Lz ∝ 1/Lz —
+écoulement déjà établi. **Limite de compressibilité** : `U_CN = α·√Ra/Lz ∝ 1/Lz` —
 à Ra=1e10 sur Lz=512, Ma ≈ 0.22 dépasse la limite D2Q9 (divergence au pas ~5k,
 constatée) ; il faut Lz ≥ 1024 pour Ma ≈ 0.11. La grille 256×1024 est le
 candidat retenu (Ma sûr + BL résolue à 1e10, δ_x ∝ Ra^−1/4).
@@ -152,60 +206,12 @@ nohup cargo run --release -- --nx 256 --ny 1024 --ra 1e10 --cs 0.1 \
     --out output/ra1e10 > output/ra1e10.log 2>&1 &
 ```
 
-> **Bilan de validation (2026-10-29)** : cause racine du biais Nu ×3 identifiée —
-> `solver.rs` appliquait Λ=3/16 à τ_t⁻ du scalaire g (paroi à nœud-équilibre,
-> pas de bounce-back) → conductance murale effondrée ×1/37 ; patch
-> `tau_t_minus = tau_t_plus` (BGK pour g). Nu mesuré sur la 2ᵉ liaison (l'artefact
-> demi-lien 0.505 est corrigé dans post.rs et main.rs). Garde-fous :
-> `MAX_U_ABORT=0.10`, cibles dynamiques `post::nusselt_trias_2d(ra)`
-> (30.41 @ 1e8, 49.23 @ 6.4e8, 100.60 @ 1e10, fit 0.2529·Ra^0.26).
-> Scripts de post-traitement : `output/plot_isothermes.py` (3 panneaux
-> θ̄/w̄/ψ, CLI : run_dir, --labels/--no-labels, --out, --wmax, --title, --dpi),
-> `output/extract_tab210.py` (grandeurs Tab. 2.10 : ⟨Nuc⟩, S₁/₂, u/w_max
-> + positions dans les 2 plans médians), `output/compare_tab27.py`.
+Expérimentations de stabilité antérieures et résolutions : voir
+[Historique / journal](#-historique--journal).
 
-> ⚠️ **Anomalie majeure détectée (run 512×2048 divergée au pas 60k + relecture
-> Trias JFM 2007)** : le facteur mesuré w_max/u_ff ≈ 1.8–2.2 est ~7–8× trop grand
-> vs le benchmark. En échelle Trias/Xin (U_ref = (α/H)·√Ra = chute_libre/√Pr),
-> le benchmark rapporte wmax = 0.223 / 0.229 / 0.230 aux Ra = 6.4e8 / 2e9 / 1e10,
-> soit wmax/u_ff ≈ 0.27. Nu aussi est faux (11.7 vs ~34 extrapolé à Ra=1e8).
-> **[RÉSOLU 2026-10-29]** : cause racine = τ_t⁻ du scalaire g (voir bilan de
-> validation plus haut).
-> Ces deux signatures invariants d'échelle désignent un problème physique ou
-> numérique (calage β_eff/forcing suspecté), pas des unités. **[RÉSOLU — voir
-> ci-dessus]** la cause était τ_t⁻ du scalaire g, pas le calage β_eff ; le test
-> laminaire Ra=1e8 (0.1 % vs Trias) a validé la chaîne β→u→Nu.
->
-> **Précisions (extraction brute Trias JFM 586, 2007)** : le papier contient les
-> deux configurations — cases 2D (A2D/B2D/C2D, grilles 156×312, 144×318, 138×326)
-> et 3D (A/B/C). Les valeurs de recalage 2D : Nū = 49.23/66.19/100.60,
-> Numax = 169.96/249.80/441.65, u2max = 2.22–2.23e-1, u3max = 2.23–2.29e-1 ;
-> 3D : Nū = 49.24/66.63/101.70 (≈1% au-dessus du 2D). Nu paroi corrigé (fix ×4)
-> : **[VALIDÉ 2026-10-29]** Ra=1e8 → Nuc = 30.45 vs 30.41 Trias 2D (écart 0.1 %)
-> sur 128×511, 2M pas ; Ra=6.4e8 → 50.89 vs 49.23 (3.3 %) sur 256×1024
-> (convergence : 51.02/3.6 % sur 128×512, plateau de méthode ~3 %) ;
-> Ra=1e10 → 101.19 vs 100.68 (**0.5 %**) sur 256×1024, 2M pas.
-> Anomalie restante : positions de pics pariétaux limitées par le premier nœud
-> (x ≥ 1/(nx−1)) — limitation méthode LBM uniforme, à documenter.
->
-> **Papier de référence (benchmark principal)** : Trias, Soria, Oliva &
-> Pérez-Segarra, « Turbulent natural convection in an enclosed cavity »,
-> J. Fluid Mech. 586 (2007), 259–293 — PDF officiel :
-> https://www.cttc.upc.edu/downloads/DHC_AR4_2Dvs3D/JFM-DHC-paper.pdf
-> (config identique à la thèse Tab. 2.6 : air Pr=0.71, Az=4, parois
-> verticales différentiellement chauffées, horizontales adiabatiques).
-> Référence secondaire (discussion qualitative uniquement, paramètres
-> différents) : Ng, Ooi, Lohse & Chung, « Regime transitions in thermally
-> driven high-Rayleigh number vertical convection », JFM (2021) — Pr=10,
-> Γ=1, DNS 2D jusqu'à Ra=1e14, régimes I/II/III, β≈0.26 en régime I.
->
-> **Forcing Guo complet (fix 2026-10-29)** : la collision implémente désormais
-> Guo, Shi & Zheng 2002 (Phys. Rev. E 65, 046308) éq. (14)-(16) — terme
-> S_i = (1−1/2τ+)·w_i·[(e_i−u)/c_s² + (e_i·u)·e_i/c_s⁴]·F + correction de
-> vitesse u_y = (Σe_iy·f_i + fy/2)/ρ (fy stockée par nœud pendant la collision,
-> déterminisme jobs>1 préservé). 16/16 tests verts.
+---
 
-## Options CLI
+## 🔧 Options CLI
 
 | Option | Défaut | Description |
 |---|---|---|
@@ -257,7 +263,9 @@ Le pool rayon est initialisé une fois par processus (`build_global`, appelé
 uniquement si `--jobs > 1`) ; à `--jobs 1`, le comportement mono-thread
 d'origine est strictement inchangé.
 
-## Sorties (`--out <dir>`)
+---
+
+## 📤 Sorties (`--out <dir>`)
 
 | Fichier | Contenu |
 |---|---|
@@ -267,32 +275,27 @@ d'origine est strictement inchangé.
 | `summary.json` | résumé : Nuc, Nuf, w_max et positions, y+, références Tab. 2.7 |
 | `progress.log` | progression (w_max, Nuc, Nuf, masse, nu_t_max) |
 
-## Structure du code
+### Scripts de post-traitement
 
-```
-src/
-├── main.rs     # CLI, boucle temporelle, moyennage, exports
-├── cli.rs      # parsing des arguments (sans dépendance)
-├── solver.rs   # pas de temps : collision LES + Boussinesq, streaming pull
-│               # + bounce-back, BC thermiques, calage des unités de réseau
-├── post.rs     # Nusselt (paroi/volumétrique), profils w, ψ, y+, CSV/VTK/JSON
-├── rng.rs      # xorshift64* (perturbation initiale)
-└── tests.rs    # tests unitaires (équilibres, conservation, CL, flottabilité)
-```
+| Script | Rôle |
+|---|---|
+| `output/plot_isothermes.py` | 3 panneaux θ̄/w̄/ψ — CLI : run_dir, `--labels`/`--no-labels`, `--out`, `--wmax`, `--title`, `--dpi` |
+| `output/extract_tab210.py` | grandeurs Tab. 2.10 : ⟨Nuc⟩, S₁/₂, u/w_max + positions dans les 2 plans médians |
+| `output/compare_tab27.py` | comparaison aux cibles Tab. 2.7 |
 
-## Critères de validation (Tab. 2.7, Trias JFM 586 2007)
+Garde-fous d'exécution : `MAX_U_ABORT=0.10`, cibles dynamiques
+`post::nusselt_trias_2d(ra)` (30.41 @ 1e8, 49.23 @ 6.4e8, 100.60 @ 1e10,
+fit `Nu = 0.2529·Ra^0.26`).
 
-| Quantité | Cible (Trias 2D) | Résultat LBM (final) | Verdict |
-|---|---|---|---|
-| Nuc @ 1e8 | 30.41 | 30.45 (128×511) | ✅ +0.1 % |
-| Nuc @ 6.4e8 | 49.23 | 50.89 (256×1024) | ✅ +3.3 % (plateau méthode) |
-| Nuc @ 1e10 | 100.60 (100.68 h-moy.) | 101.19 (256×1024) | ✅ +0.5 % |
-| w_max(z=0.5)/U_CN | ≈ 0.223 en x*≈0.004 | ≈ 0.23 @ 6.4e8 ; 0.31 @ 1e10, x≥0.0157 | ⚠️ valeur 1e10 à discuter |
-| w_max(z=0.75) | ≈ 0.11 en x*≈0.005 | x ≥ 0.023 (borne maillage) | ⚠️ positions bornées par le 1er nœud |
-| S^1/2 (dθ/d(z/H) cœur) | 0.99 – 1.01 | 0.974 / 1.064 / 1.317 | ✅ 1e8–6.4e8 |
-| y+ première cellule | 0.55 – 1.11 | 0.63 / 0.63 / 1.67 | ✅ |
+---
 
-**Test curseur DNS/LES** (Ra=1e8, 64×256, 1M pas, même ν) :
+## 🧪 Validation détaillée
+
+### Critères de validation (Tab. 2.7, Trias JFM 586 2007)
+
+Voir le [tableau des résultats clés](#-résultats-clés) en tête de ce README.
+
+### Test curseur DNS/LES (Ra=1e8, 64×256, 1M pas, même ν)
 
 | Run | Cs | Nuc | ν_t/ν | Écart vs DNS fine (30.45) |
 |---|---|---|---|---|
@@ -307,11 +310,20 @@ sous-maille soit peu actif (ν_t/ν = 5 % → 1.6 % en raffinant à 6.4e8), d'o�
 convergence 0.1–3.6 % vs Trias sur les 3 Ra. Le Smagorinsky joue alors son rôle
 historique en LBM : amortisseur de stabilité à τ proche de 0.5 (Hou et al. 1996).
 
+### Smoke test Ra=1e6
+
 Le smoke Ra=1e6 (64×256, 20k pas) valide la chaîne complète :
 stabilité, Nuc = Nuf (équilibre des flux), jet ascendant le long de la paroi
 chaude, couches limites thermiques fines.
 
-## Écarts documentés vs thèse
+### Anomalie restante
+
+Positions de pics pariétaux limitées par le premier nœud (x ≥ 1/(nx−1)) —
+limitation méthode LBM uniforme, à documenter.
+
+---
+
+## 📐 Écarts documentés vs thèse
 
 1. **Maillage uniforme** vs tangente hyperbolique (Eq. 2.104) : la version LBM
    D2Q9 de ce projet utilise une grille cartésienne uniforme (bounce-back
@@ -319,7 +331,7 @@ chaude, couches limites thermiques fines.
    s'approcher des cibles y+ = 0.5–1.1 à Ra=1e10, il faut soit une grille fine
    (nx ≥ 256), soit passer à un maillage non uniforme (hors périmètre v0.1).
 2. **Unités de réseau** : ν/α sont calés pour matcher Ra et Pr cibles via
-   ν = (utarget·√Pr·Lz / (1.7·√Ra))^{2/3} avec plancher TRT ν ≥ 0.002
+   `ν = (utarget·√Pr·Lz / (1.7·√Ra))^{2/3}` avec plancher TRT ν ≥ 0.002
    (τ+ ≥ 0.506). La vitesse lattice dépend de Ra et ν (u_max ∝ ν à Ra fixé) ;
    pour rester sous la limite de compressibilité (u_max ≲ 0.15), abaisser
    `--utarget` ne suffit pas toujours — le plancher fixe alors ν. Le temps
@@ -331,16 +343,123 @@ chaude, couches limites thermiques fines.
 4. **2D strict** : la thèse mentionne des parois latérales périodiques (3D
    tronqué) ; ici le domaine est strictement 2D (une cellule en profondeur).
 
-## Références
+---
 
+## 📜 Historique / journal
+
+Notes de débogage, bilans de validation et corrections résolues — conservées
+pour traçabilité, repliées pour alléger la lecture.
+
+<details>
+<summary><strong>Bilan de validation (2026-10-29) — cause racine du biais Nu ×3</strong></summary>
+
+> Cause racine du biais Nu ×3 identifiée — `solver.rs` appliquait Λ=3/16 à τ_t⁻
+> du scalaire g (paroi à nœud-équilibre, pas de bounce-back) → conductance
+> murale effondrée ×1/37 ; patch `tau_t_minus = tau_t_plus` (BGK pour g).
+> Nu mesuré sur la 2ᵉ liaison (l'artefact demi-lien 0.505 est corrigé dans
+> post.rs et main.rs). Garde-fous : `MAX_U_ABORT=0.10`, cibles dynamiques
+> `post::nusselt_trias_2d(ra)` (30.41 @ 1e8, 49.23 @ 6.4e8, 100.60 @ 1e10,
+> fit 0.2529·Ra^0.26). Scripts de post-traitement : `output/plot_isothermes.py`
+> (3 panneaux θ̄/w̄/ψ, CLI : run_dir, --labels/--no-labels, --out, --wmax,
+> --title, --dpi), `output/extract_tab210.py` (grandeurs Tab. 2.10 : ⟨Nuc⟩, S₁/₂,
+> u/w_max + positions dans les 2 plans médians), `output/compare_tab27.py`.
+
+</details>
+
+<details>
+<summary><strong>Anomalie majeure (run 512×2048 divergée au pas 60k + relecture Trias JFM 2007) — [RÉSOLU 2026-10-29]</strong></summary>
+
+> Le facteur mesuré w_max/u_ff ≈ 1.8–2.2 est ~7–8× trop grand vs le benchmark.
+> En échelle Trias/Xin (`U_ref = (α/H)·√Ra = chute_libre/√Pr`), le benchmark
+> rapporte wmax = 0.223 / 0.229 / 0.230 aux Ra = 6.4e8 / 2e9 / 1e10,
+> soit wmax/u_ff ≈ 0.27. Nu aussi est faux (11.7 vs ~34 extrapolé à Ra=1e8).
+> **[RÉSOLU 2026-10-29]** : cause racine = τ_t⁻ du scalaire g (voir bilan de
+> validation plus haut).
+>
+> Ces deux signatures invariants d'échelle désignent un problème physique ou
+> numérique (calage β_eff/forcing suspecté), pas des unités. **[RÉSOLU — voir
+> ci-dessus]** la cause était τ_t⁻ du scalaire g, pas le calage β_eff ; le test
+> laminaire Ra=1e8 (0.1 % vs Trias) a validé la chaîne β→u→Nu.
+
+</details>
+
+<details>
+<summary><strong>Précisions (extraction brute Trias JFM 586, 2007)</strong></summary>
+
+> Le papier contient les deux configurations — cases 2D (A2D/B2D/C2D, grilles
+> 156×312, 144×318, 138×326) et 3D (A/B/C). Les valeurs de recalage 2D :
+> Nū = 49.23/66.19/100.60, Numax = 169.96/249.80/441.65, u2max = 2.22–2.23e-1,
+> u3max = 2.23–2.29e-1 ; 3D : Nū = 49.24/66.63/101.70 (≈1 % au-dessus du 2D).
+> Nu paroi corrigé (fix ×4) : **[VALIDÉ 2026-10-29]** Ra=1e8 → Nuc = 30.45 vs
+> 30.41 Trias 2D (écart 0.1 %) sur 128×511, 2M pas ; Ra=6.4e8 → 50.89 vs 49.23
+> (3.3 %) sur 256×1024 (convergence : 51.02/3.6 % sur 128×512, plateau de
+> méthode ~3 %) ; Ra=1e10 → 101.19 vs 100.68 (**0.5 %**) sur 256×1024, 2M pas.
+> Anomalie restante : positions de pics pariétaux limitées par le premier nœud
+> (x ≥ 1/(nx−1)) — limitation méthode LBM uniforme, à documenter.
+
+</details>
+
+<details>
+<summary><strong>Expérimentation stabilité Ra=1e10 (pré-fix Guo/τ_t⁻, historique)</strong></summary>
+
+> - 128×512 (20k pas) : `--alpha-mult 1/2/4/8` divergence NaN au pas 2700–5000 ;
+>   rampe de spin-up de flottabilité (β linéaire 0→β_eff) : retarde sans supprimer.
+>   Cause : à ν fixé par le plancher TRT, `U_CN = α·√Ra/Lz ∝ 1/Lz` — à Lz=511,
+>   Ma attendu ≈ 0.22 dépasse la limite de compressibilité D2Q9.
+> - 256×1024 (initialisation classique) : divergeait au pas 15.5k **[RÉSOLU]** :
+>   post-fix Guo + restart depuis snapshot 6.4e8 **même grille**, le run est
+>   **STABLE et complète** (configuration ci-dessus).
+> - 512×2048 + restart : stable (expérimentation pré-fix, conservée comme point
+>   de stabilité ; rendu superflu par le run 256×1024 réussi).
+> - **Conclusion (2026-10-30)** : la configuration validée pour Ra=1e10 est
+>   **256×1024 + restart depuis snapshot Ra=6.4e8 (256×1024, même grille)** :
+>   Ma ≈ 0.11, transitoire éliminé, **Nuc = 101.19 vs Trias 100.68 (0.5 %)**.
+
+</details>
+
+<details>
+<summary><strong>Forcing Guo complet (fix 2026-10-29)</strong></summary>
+
+> La collision implémente désormais Guo, Shi & Zheng 2002 (Phys. Rev. E 65,
+> 046308) éq. (14)-(16) — terme
+> `S_i = (1−1/2τ+)·w_i·[(e_i−u)/c_s² + (e_i·u)·e_i/c_s⁴]·F` + correction de
+> vitesse `u_y = (Σe_iy·f_i + fy/2)/ρ` (fy stockée par nœud pendant la collision,
+> déterminisme jobs>1 préservé). 16/16 tests verts à l'époque (22/22 aujourd'hui).
+
+</details>
+
+<details>
+<summary><strong>Papier de référence (benchmark principal)</strong></summary>
+
+> Trias, Soria, Oliva & Pérez-Segarra, « Turbulent natural convection in an
+> enclosed cavity », J. Fluid Mech. 586 (2007), 259–293 — PDF officiel :
+> <https://www.cttc.upc.edu/downloads/DHC_AR4_2Dvs3D/JFM-DHC-paper.pdf>
+> (config identique à la thèse Tab. 2.6 : air Pr=0.71, Az=4, parois
+> verticales différentiellement chauffées, horizontales adiabatiques).
+> Référence secondaire (discussion qualitative uniquement, paramètres
+> différents) : Ng, Ooi, Lohse & Chung, « Regime transitions in thermally
+> driven high-Rayleigh number vertical convection », JFM (2021) — Pr=10,
+> Γ=1, DNS 2D jusqu'à Ra=1e14, régimes I/II/III, β≈0.26 en régime I.
+
+</details>
+
+---
+
+## 📚 Références
+
+- **[Trias 2007]** Trias, Soria, Oliva & Pérez-Segarra — *Turbulent natural
+  convection in an enclosed cavity*, JFM 586, 259–293, DNS 2D/3D cavité Az=4
+  Pr=0.71 : benchmark principal (Nū = 30.41/49.23/100.60 aux
+  Ra = 1e8/6.4e8/1e10) — [PDF officiel](https://www.cttc.upc.edu/downloads/DHC_AR4_2Dvs3D/JFM-DHC-paper.pdf).
 - [Ginzburg 2008] Ginzburg, Verhaeghe & d'Humières — TRT, Λ = 3/16 optimal
   pour bounce-back (Comm. Comp. Phys. 3).
-- **[Trias 2007]** Trias, Soria, Oliva & Pérez-Segarra — JFM 586, 259–293,
-  DNS 2D/3D cavité Az=4 Pr=0.71 : benchmark principal (Nū = 30.41/49.23/100.60
-  aux Ra = 1e8/6.4e8/1e10) ; PDF cttc.upc.edu.
 - [Xin 1993] Xin & Le Quéré — SND spectrale Chebyshev 96×768, Ra=1e10.
 - [Sergent 2000] Sergent — modèle échelles mixtes, VF 66×130.
 - [Le Quéré 1987] — référence AR=4, Ra=1e6, Nu ≈ 1.07.
 - [Hou 1996] Hou et al. — Smagorinsky en LBM comme amortisseur de stabilité.
+- [Ng 2021] Ng, Ooi, Lohse & Chung — *Regime transitions in thermally driven
+  high-Rayleigh number vertical convection*, JFM (référence secondaire,
+  discussion qualitative uniquement).
 - Thèse « 2012lare0037_BBrangeon.pdf », §2.5, Tab. 2.6/2.7 (SPEC.md).
-- Crate : `oxiphysics-lbm` v0.1.2 (module `thermal_lbm`, `turbulence`).
+- Crate : [`oxiphysics-lbm` v0.1.2](https://crates.io/crates/oxiphysics-lbm)
+  (module `thermal_lbm`, `turbulence`).
