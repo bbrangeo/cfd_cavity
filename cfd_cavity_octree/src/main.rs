@@ -8,7 +8,7 @@
 use std::path::Path;
 use std::time::Instant;
 
-use cfd_cavity_octree::cavity::{nusselt_cold, nusselt_hot};
+use cfd_cavity_octree::cavity::{nusselt_cold, nusselt_hot, nusselt_hot_fine};
 use cfd_cavity_octree::solver::CavitySolver;
 
 /// Paramètres parsés (std::env, clé=valeur).
@@ -229,6 +229,11 @@ fn main() {
     let mut nuc_sum = 0.0f64;
     let mut nuf_sum = 0.0f64;
     let mut nuc_n = 0usize;
+    // Diagnostic Nu_fin : moyenné sur le bloc fin de paroi chaude (même
+    // fenêtre), pour distinguer vrai champ vs corruption d'estimateur 2×2.
+    let mut nufine_sum = 0.0f64;
+    let hot_block_idx = sim.blocks.iter().position(|b| b.hot_wall).expect("bloc paroi chaude");
+    let lx_coarse = (args.nx0 - 1) as f64;
     let mut noise_max = 0.0f64;
     let mut noise_iface_max = 0.0f64;
     let start = Instant::now();
@@ -237,9 +242,12 @@ fn main() {
         sim.step_cavity();
 
         // Moyennage Nuc après sample_start (fenêtre sample-start→fin).
+        // Diagnostic Nu_fin : moyenné sur le bloc fin de paroi chaude (même
+        // fenêtre), pour distinguer vrai champ vs corruption d'estimateur.
         if step >= args.sample_start && (step - args.sample_start) % args.sample_every == 0 {
             nuc_sum += nusselt_hot(&sim.coarse);
             nuf_sum += nusselt_cold(&sim.coarse);
+            nufine_sum += nusselt_hot_fine(&sim.blocks[hot_block_idx].fine, lx_coarse);
             nuc_n += 1;
         }
 
@@ -250,9 +258,10 @@ fn main() {
             noise_iface_max = noise_iface_max.max(noise.max_rho_dev_ifaces);
             let nuc = nusselt_hot(&sim.coarse);
             let nuf = nusselt_cold(&sim.coarse);
+            let nufine = nusselt_hot_fine(&sim.blocks[hot_block_idx].fine, lx_coarse);
             let msg = format!(
-                "step {:>7} | max_rho_dev = {:.3e} | max_rho_dev_ifaces = {:.3e} | masse = {:.6} | Nuc = {:.4} | Nuf = {:.4} | max_u = {:.5}",
-                step, noise.max_rho_dev, noise.max_rho_dev_ifaces, noise.masse, nuc, nuf, sim.max_u_all()
+                "step {:>7} | max_rho_dev = {:.3e} | max_rho_dev_ifaces = {:.3e} | masse = {:.6} | Nuc = {:.4} | Nuf = {:.4} | Nu_fin = {:.4} | max_u = {:.5}",
+                step, noise.max_rho_dev, noise.max_rho_dev_ifaces, noise.masse, nuc, nuf, nufine, sim.max_u_all()
             );
             println!("{msg}");
             log_lines.push(msg);
@@ -281,6 +290,7 @@ fn main() {
     }
     let nuc_mean = nuc_sum / nuc_n as f64;
     let nuf_mean = nuf_sum / nuc_n as f64;
+    let nufine_mean = nufine_sum / nuc_n as f64;
 
     // --- Référence uniforme (output/ra1e6_full) et verdict porte V2 ---
     let nuc_ref = 1.3660; // crate uniforme Ra=1e6 (64×256, 200k pas)
@@ -289,7 +299,7 @@ fn main() {
 
     let summary = format!(
         "--- Bilan (moyenné sur {nuc_n} échantillons, fenêtre {}→{}) ---
-Nuc = {nuc_mean:.4} | Nuf = {nuf_mean:.4} | référence uniforme Ra=1e6 = {nuc_ref} | écart = {ecart_pct:.1} %
+Nuc = {nuc_mean:.4} | Nuf = {nuf_mean:.4} | Nu_fin (bloc chaud) = {nufine_mean:.4} | référence uniforme Ra=1e6 = {nuc_ref} | écart = {ecart_pct:.1} %
 Bruit acoustique (max sur la run) : max|ρ−ρ̄| = {noise_max:.3e} | interfaces = {noise_iface_max:.3e}
 PORTE V2 (écart Nuc ≤ 5 %) : {}",
         args.sample_start,

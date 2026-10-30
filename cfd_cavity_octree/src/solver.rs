@@ -30,7 +30,8 @@
 use crate::cavity::{
     apply_thermal_boundary_conditions, apply_thermal_boundary_conditions_block,
     check_finite_levels, collide_cavity, enforce_wall_velocity, enforce_wall_velocity_block,
-    max_u, stream_cavity, update_macroscopic_guo, C_SCALE, MAX_U_ABORT, UTARGET,
+    max_u, stream_cavity, stream_cavity_block, update_macroscopic_guo, C_SCALE, MAX_U_ABORT,
+    UTARGET,
 };
 use crate::cavity::{NoiseStats, Rng, T_COLD, T_HOT};
 use crate::grid::{bilinear_stencil, OctreeGrid};
@@ -181,13 +182,26 @@ impl CavitySolver {
 
         // --- Grilles : grossier domaine complet + 2 blocs fins pleine
         // hauteur collés aux parois verticales (plan §2.1) ---
+        // Bloc chaud [0, bl_width) : nœuds fins intérieurs x ∈ [0, bl_width−0.5],
+        // mur x=0 = colonne fine a=1 exactement, fantômes à −0.5/+0.5.
+        // Bloc froid [nx0−1−bl_width, nx0−1) : nœuds fins intérieurs
+        // x ∈ [nx0−1−bl_width, nx0−1], mur x=nx0−1 = colonne fine a=nx1−2
+        // exactement. (PAS [nx0−bl_width, nx0) : le dernier nœud fin serait
+        // à x=nx0, HORS du domaine.)
+        // Verticalement : bloc [0, ny0−1] — nœuds fins intérieurs y ∈
+        // [0, ny0−1], murs y=0 (b=1) et y=ny0−1 (b=ny1−2) EXACTS, fantômes
+        // b=0/b=ny1−1 à y=−0.5/ny0−0.5 hors domaine (extrapolés, jamais
+        // utilisés : bounce-back). (PAS [0, ny0) : les nœuds fins seraient
+        // à y=ny0−0.5 et ny0, HORS du domaine — la cavité fine serait une
+        // cellule plus haute que la cavité grossière et le no-slip/
+        // adiabatique serait imposé au-dessus du mur physique.)
         let coarse = LbmLevel::new(nx0, ny0);
         let mut blocks = Vec::with_capacity(2);
         for &(bx0, bx1, hot, cold) in &[
-            (0usize, bl_width, true, false),          // paroi chaude (gauche)
-            (nx0 - bl_width, nx0, false, true),       // paroi froide (droite)
+            (0usize, bl_width, true, false),                      // paroi chaude (x=0)
+            (nx0 - 1 - bl_width, nx0 - 1, false, true),           // paroi froide (x=nx0-1)
         ] {
-            let grid = OctreeGrid::new(nx0, ny0, bx0, 0, bx1, ny0);
+            let grid = OctreeGrid::new(nx0, ny0, bx0, 0, bx1, ny0 - 1);
             let fine = LbmLevel::new(grid.nx1, grid.ny1);
             let n1 = grid.nx1 * grid.ny1;
             blocks.push(CavityBlock {
@@ -282,14 +296,14 @@ impl CavitySolver {
     /// Un pas grossier complet de cavité (Étape B, plan §2.2 + §3.3) :
     /// 1. grossier : collide (force Guo, domaine complet) → stream → CL
     ///    thermiques → update_macroscopic_guo → no-slip ;
-    /// 2. par bloc fin, 2 sous-pas (dt_fin = dt_grossier/2) : collide
-    ///    interior_only (fantômes exclus — les distributions injectées par le
-    ///    transfert §1.2 sont utilisées telles quelles par le streaming, sans
-    ///    double relaxation) → stream → CL thermiques block-aware →
-    ///    update_macroscopic_guo → no-slip block-aware ;
-    /// 3. couplage interfaces (§1.2) par bloc : grossier→fin (fantômes,
-    ///    préparés pour le pas suivant) puis fin→grossier (coïncidents) ;
-    /// 4. moments des nœuds grossiers coïncidents recalculés depuis les
+    /// 2. couplage grossier→fin (§1.2) : injection FRAÎCHE des fantômes
+    ///    d'interface AVANT les sous-pas fins (Lagrava et al. 2015) ;
+    /// 3. par bloc fin, 2 sous-pas (dt_fin = dt_grossier/2) : collide
+    ///    interior_only → stream block-aware avec bounce-back EXACT sur les
+    ///    parois physiques (haut/bas + mur collé) → CL thermiques block-aware
+    ///    → update_macroscopic_guo → no-slip block-aware ;
+    /// 4. couplage fin→grossier (§1.2) : moyenne 2×2 des coïncidents ;
+    /// 5. moments des nœuds grossiers coïncidents recalculés depuis les
     ///    distributions injectées (la collision du pas suivant lit ρ, u, T).
     pub fn step_cavity(&mut self) {
         // --- 1. Niveau grossier (force Guo, CL crate uniforme) ---
@@ -308,10 +322,21 @@ impl CavitySolver {
         update_macroscopic_guo(&mut self.coarse, &self.fy_coarse, jobs);
         enforce_wall_velocity(&mut self.coarse);
 
-        // --- 2. Blocs fins : 2 sous-pas chacun (emprunts disjointes) ---
+        // --- 2. Couplage grossier→fin AVANT les sous-pas fins (§1.2, Lagrava
+        // et al. 2015 : injection FRAÎCHE de l'état post-couplage grossier,
+        // pas de retard d'un pas complet) — fantômes côté interface
+        // préparés pour les 2 sous-pas ---
+        let xi = self.xi;
+        let coarse = &self.coarse;
+        for block in &mut self.blocks {
+            coarse_to_fine(&block.grid, coarse, &mut block.fine, &xi);
+        }
+
+        // --- 3. Blocs fins : 2 sous-pas chacun (dt_fin = dt_grossier/2) ---
         let tau_fine = self.tau_fine;
         let beta_f = self.beta_eff_fine;
         for block in &mut self.blocks {
+            let (wl, wr) = (block.hot_wall, block.cold_wall);
             for _ in 0..2 {
                 collide_cavity(
                     &mut block.fine,
@@ -321,7 +346,11 @@ impl CavitySolver {
                     true,
                     jobs,
                 );
-                stream_cavity(&mut block.fine, jobs);
+                // Bounce-back EXACT sur les parois physiques du bloc (haut/
+                // bas toujours, gauche/droite selon le mur collé) — sinon la
+                // paroi fine tire ses distributions entrantes d'une
+                // extrapolation grossière (no-slip corrompu).
+                stream_cavity_block(&mut block.fine, jobs, wl, wr, true, true);
                 apply_thermal_boundary_conditions_block(
                     &mut block.fine,
                     block.hot_wall,
@@ -332,17 +361,12 @@ impl CavitySolver {
             }
         }
 
-        // --- 3. Couplage interfaces (§1.2), par bloc (emprunts disjointes
-        // champ à champ : self.blocks mut + self.coarse immut puis mut) ---
-        let xi = self.xi;
-        for block in &mut self.blocks {
-            coarse_to_fine(&block.grid, &self.coarse, &mut block.fine, &xi);
-        }
+        // --- 4. Couplage fin→grossier (§1.2), par bloc ---
         for block in &mut self.blocks {
             fine_to_coarse(&block.grid, &block.fine, &mut self.coarse, &xi);
         }
 
-        // --- 4. Moments coïncidents grossiers recalculés (post-injection) ---
+        // --- 5. Moments coïncidents grossiers recalculés (post-injection) ---
         let idxs: Vec<usize> = self
             .blocks
             .iter()

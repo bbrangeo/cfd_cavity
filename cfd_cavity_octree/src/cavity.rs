@@ -335,6 +335,130 @@ pub fn stream_cavity(lvl: &mut LbmLevel, jobs: usize) {
     crate::lbm::stream(lvl);
 }
 
+/// Streaming pull block-aware pour un bloc fin de cavité (Étape B).
+///
+/// - Les couches fantômes (bord de la grille fine) ne sont PAS streamées :
+///   elles portent l'injection §1.2 du couplage (côté interface) et sont
+///   recalculées à chaque couplage grossier→fin — les écraser par un
+///   streaming les polluerait avec les valeurs intérieures.
+/// - Nœud intérieur : pull normal. Si la source tombe dans une couche
+///   fantôme CÔTÉ PAROI physique (hors domaine, `wall_*`), bounce-back
+///   mid-link EXACT comme le crate uniforme (f ← f*_post-collision(opp),
+///   solver.rs l.838-900) — le no-slip des parois fines est alors identique
+///   à celui du niveau grossier. (Sans cela, la paroi fine tirerait ses
+///   distributions entrantes d'une extrapolation grossière hors domaine :
+///   momentum parasite ≈ −u_intérieur/2, no-slip corrompu.)
+///   Si la source tombe dans une couche fantôme côté INTERFACE (dans le
+///   domaine physique), pull de l'injection §1.2 (couplage).
+/// - g : idem (bounce-back garde la valeur pré-streaming, CL thermiques
+///   appliquées ensuite par `apply_thermal_boundary_conditions_block`).
+///
+/// `jobs > 1` : bandes de lignes rayon (régions d'écriture disjointes,
+/// instantanés clonés — même pattern que `stream_cavity`).
+pub fn stream_cavity_block(
+    lvl: &mut LbmLevel,
+    jobs: usize,
+    wall_left: bool,
+    wall_right: bool,
+    wall_bottom: bool,
+    wall_top: bool,
+) {
+    let nx = lvl.nx;
+    let ny = lvl.ny;
+    let f_old = lvl.f.clone();
+    let g_old = lvl.g.clone();
+
+    /// Stream une ligne intérieure (helpers communs mono/rayon). Les sources
+    /// d'un nœud intérieur (a ∈ [1, nx−2], b ∈ [1, ny−2], |c| ≤ 1) tombent
+    /// toujours dans la grille fine [0, nx−1] × [0, ny−1].
+    #[inline]
+    fn stream_inner_row(
+        f_row: &mut [[f64; 9]],
+        g_row: &mut [[f64; 9]],
+        f_old: &[[f64; 9]],
+        g_old: &[[f64; 9]],
+        iy: usize,
+        nx: usize,
+        ny: usize,
+        wall_left: bool,
+        wall_right: bool,
+        wall_bottom: bool,
+        wall_top: bool,
+    ) {
+        for ix in 1..nx - 1 {
+            let k = iy * nx + ix;
+            for i in 0..9 {
+                let cx = D2Q9_VELOCITIES[i][0] as i64;
+                let cy = D2Q9_VELOCITIES[i][1] as i64;
+                let sx = ix as i64 - cx;
+                let sy = iy as i64 - cy;
+                let wall_src = (sx == 0 && wall_left)
+                    || (sx == nx as i64 - 1 && wall_right)
+                    || (sy == 0 && wall_bottom)
+                    || (sy == ny as i64 - 1 && wall_top);
+                if wall_src {
+                    // Bounce-back mid-link (crate uniforme) : réflexion de la
+                    // distribution sortante post-collision ; g garde sa valeur
+                    // pré-streaming (CL thermiques ensuite).
+                    f_row[ix][i] = f_old[k][D2Q9_OPPOSITES[i]];
+                    g_row[ix][i] = g_old[k][i];
+                } else {
+                    // Pull normal (intérieur ou injection §1.2 côté interface).
+                    let src = (sy as usize) * nx + sx as usize;
+                    f_row[ix][i] = f_old[src][i];
+                    g_row[ix][i] = g_old[src][i];
+                }
+            }
+        }
+    }
+
+    if jobs > 1 {
+        let f_rows: Vec<&mut [[f64; 9]]> = lvl.f.chunks_mut(nx).collect();
+        let g_rows: Vec<&mut [[f64; 9]]> = lvl.g.chunks_mut(nx).collect();
+        f_rows
+            .into_par_iter()
+            .zip(g_rows)
+            .enumerate()
+            .for_each(|(iy, (f_row, g_row))| {
+                if iy == 0 || iy + 1 == ny {
+                    return; // couches fantômes : non streamées
+                }
+                stream_inner_row(
+                    f_row,
+                    g_row,
+                    &f_old,
+                    &g_old,
+                    iy,
+                    nx,
+                    ny,
+                    wall_left,
+                    wall_right,
+                    wall_bottom,
+                    wall_top,
+                );
+            });
+        return;
+    }
+    // Chemin mono-thread.
+    for iy in 1..ny - 1 {
+        let f_row = &mut lvl.f[iy * nx..(iy + 1) * nx];
+        let g_row = &mut lvl.g[iy * nx..(iy + 1) * nx];
+        stream_inner_row(
+            f_row,
+            g_row,
+            &f_old,
+            &g_old,
+            iy,
+            nx,
+            ny,
+            wall_left,
+            wall_right,
+            wall_bottom,
+            wall_top,
+        );
+    }
+}
+
 /// Conditions aux limites thermiques (après streaming) — copie EXACTE du
 /// crate uniforme (solver.rs l.951-988) : parois verticales isothermes
 /// (g paroi = geq(T_wall, u=0)), horizontales adiabatiques (zero-gradient,
@@ -536,6 +660,31 @@ pub fn nusselt_cold(coarse: &LbmLevel) -> f64 {
     }
     let avg_grad = sum / ny as f64;
     avg_grad * (nx - 1) as f64 / DELTA_T
+}
+
+/// Nusselt paroi chaude mesuré DIRECTEMENT sur le champ fin (diagnostic V2) :
+/// gradient entre la colonne fine de mur (a=1, x=0) et la colonne fine
+/// suivante (a=2, x=0.5), échelle physique `lx_coarse` = nx0−1 passée
+/// explicitement (le bloc fin ne couvre que la BL, pas le domaine entier).
+/// Vérification conductive : T chute de ΔT sur lx_coarse cellules
+/// grossières ⇒ |T(a=1)−T(a=2)| = ΔT·0.5/lx_coarse (liaison 0.5 cellule
+/// fine), ×2 ⇒ ΔT/lx_coarse, ×lx_coarse/ΔT ⇒ Nu = 1 exact.
+/// Compare le gradient PHYSIQUE fin au gradient lu sur le champ grossier
+/// injecté : si Nu_fin ≈ Nu_grossier, la sur-prédiction est un vrai champ
+/// (solution) ; si Nu_fin ≪ Nu_grossier, c'est le transfert 2×2 qui corrompt
+/// l'estimateur grossier.
+pub fn nusselt_hot_fine(fine: &LbmLevel, lx_coarse: f64) -> f64 {
+    let nx = fine.nx;
+    let ny = fine.ny;
+    let mut sum = 0.0;
+    for b in 1..ny - 1 {
+        // Mur fin a=1 (x=0), colonne suivante a=2 (x=0.5) : liaison 0.5.
+        let t1 = fine.temp[b * nx + 1];
+        let t2 = fine.temp[b * nx + 2];
+        sum += (t1 - t2).abs() * 2.0; // ×2 : la liaison vaut 0.5 cellule fine
+    }
+    let avg_grad = sum / (ny - 2) as f64;
+    avg_grad * lx_coarse / DELTA_T
 }
 
 /// Vitesse max du champ (diagnostic de stabilité, crate uniforme `post::max_uy`).
