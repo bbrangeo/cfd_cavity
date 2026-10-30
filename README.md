@@ -31,9 +31,14 @@ hypothèse de Boussinesq.
     Ra=1e8 (τ+ → 0.5) :
     - temps de relaxation pairs τ+ = 0.5 + 3·(ν + ν_t) ; impairs
       τ− = 0.5 + Λ/(τ+ − 0.5) avec **Λ = 3/16** (valeur optimale pour
-      bounce-back) ; idem pour g (τ_t±, α_t = ν_t/Pr_t, Pr_t = 0.9) ;
+      bounce-back) ; pour le scalaire g : **BGK pur, τ_t− = τ_t+**
+      (paroi à nœud-équilibre ⇒ Λ=3/16 injustifié, cf. Écarts documentés) ;
     - moments non-équilibrés π_neq = Σ c_i c_j (f_i − f_i^eq) ;
-    - |S| = sqrt(π_neq:π_neq) / (2·cs²·τ·ρ) (formule standard LBM) ;
+    - |S| = sqrt(π_neq:π_neq) / (2·cs²·τ·ρ) (formule standard LBM).
+      ⚠️ **Convention** : cette formule donne √(S:S), soit |S|_canonique/√2 par
+      rapport à la définition usuelle |S| = √(2 S:S) ⇒ **Cs effectif ≈ 0.071**
+      (et non 0.10) dans la convention Smagorinsky classique. À documenter
+      tel quel dans le mémoire ; ne change pas les conclusions (ν_t/ν faible).
     - ν_t = (Cs·Δx)²·|S| via `compute_turbulent_viscosity` de la crate (Cs = 0.10) ;
   - force de Boussinesq intégrée façon **Guo, Shi & Zheng 2002 (complet,
     éq. (14)-(16))** : S_i = (1 − 1/2τ+)·w_i·[(e_i−u)/c_s² + (e_i·u)·e_i/c_s⁴]·F,

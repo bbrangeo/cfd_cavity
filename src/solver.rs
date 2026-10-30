@@ -1105,6 +1105,10 @@ fn collide_node(
         pi_yy += fneq * cy * cy;
     }
     // |S| = sqrt(π_neq:π_neq) / (2·cs²·τ·ρ) ; π:π = Πxx² + 2Πxy² + Πyy².
+    // ⚠️ Convention : cette formule donne √(S:S), soit |S|_canonique/√2 vs la
+    // définition usuelle |S| = √(2 S:S) ⇒ Cs effectif ≈ 0.071 (et non 0.10)
+    // dans la convention Smagorinsky classique. Ne change pas les conclusions
+    // (ν_t/ν faible) ; à documenter tel quel dans le mémoire.
     let pi2 = pi_xx * pi_xx + 2.0 * pi_xy * pi_xy + pi_yy * pi_yy;
     let s_mag = pi2.sqrt() / (2.0 * CS2 * tau * rho.max(1e-12));
 

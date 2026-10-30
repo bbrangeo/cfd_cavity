@@ -5,5 +5,8 @@
 *.vti
 .DS_Store
 
+# artefacts Cargo des crates imbriqués
+cfd_cavity_octree/target/
+
 # logs de simulation
 *.log

@@ -14,6 +14,55 @@ dans le noyau) — réduire le coût du 256×1024 tout en gardant la précision 
 (BL à Δx/2 sur ~6 % du domaine, noyau à Δx) : ~90–120k nœuds → gain ~2×. Le noyau
 est quasi-stratifié, les gradients y sont 100× plus faibles qu'aux parois.
 
+### 0.1 Mapping tanh (Éq. 2.104) → frontières de niveaux (γx = 2, valeur thèse)
+
+La loi tanh continue (Δx variable à chaque maille) n'est pas directement possible
+en LBM (cellules carrées à taille constante par niveau). L'octree l'approche par
+un escalier en puissances de 2 qui suit la courbe : Δx_fin = Δx_min de la tanh,
+changement de niveau là où Δx_tanh franchit 2·Δx_min, 4·Δx_min, 8·Δx_min.
+Vérifié numériquement (loi x(k) = Lx/2·[1 + tanh(γx(2k/Nx−1))/tanh(γx)], γx=2) :
+
+| Grille thèse | Δx_min (1ʳᵉ maille) | Δx_max/Δx_min | Niveau 0→1 | Niveau 1→2 | Niveau 2→3 |
+|---|---|---|---|---|---|
+| C2D3 (Nx=128) | 0.00118 | 13.7 | x ≈ 0.020 | x ≈ 0.066 | x ≈ 0.161 |
+| C2D2 (Nx=96) | 0.00159 | 13.6 | x ≈ 0.020 | x ≈ 0.066 | x ≈ 0.164 |
+| C2D1 (Nx=64) | 0.00243 | 13.3 | x ≈ 0.020 | x ≈ 0.066 | x ≈ 0.167 |
+
+→ **4 niveaux** (Δx_min à 8·Δx_min), symétriques sur les deux parois verticales.
+Le premier changement de niveau tombe toujours à x ≈ 0.02, juste à l'extérieur
+de la BL (pic w̄ à x ≈ 0.004, BL ≈ 1 % de Lx).
+
+**Coût en imitant C2D3** (Lx=1, Lz=4 ; cellules carrées ⇒ colonnes fines sur
+toute la hauteur — gaspillage vs la thèse régulière en z, mais règle au passage
+les coins et les BL horizontales) :
+
+| Niveau | Δx | Nœuds (approx.) | Sous-pas par pas grossier |
+|---|---|---|---|
+| 0 (paroi, x<0.02) | 0.00118 | ~122 k | 8 |
+| 1 (x<0.066) | 0.00236 | ~66 k | 4 |
+| 2 (x<0.161) | 0.00472 | ~35 k | 2 |
+| 3 (noyau) | 0.00944 | ~30 k | 1 |
+| **Total** | | **~250 k** | ~1.3 M màj/pas grossier |
+
+Même nombre de nœuds que le 256×1024 actuel, mais **1ʳᵉ maille 3.3× plus fine**
+(0.00118 vs 0.0039) → règle directement l'anomalie « positions des pics bornées
+par le 1er nœud ». Gain ~17× vs grille uniforme à Δx_min (847×3390 = 2.9 M nœuds).
+
+**Le vrai verrou — τ sur les niveaux grossiers** (cf. §1.3) : en acoustic scaling,
+ν_lu est divisé par 2 à chaque niveau plus grossier. Avec 4 niveaux :
+- plancher sur le niveau fin (τ⁺=0.506) → noyau à τ⁺ ≈ 0.50075, trop près de
+  l'instabilité TRT ;
+- plancher sur le noyau → niveau fin à ν_lu = 8·ν, vitesse réseau ~0.5 à Ra=1e10
+  (Lz ≈ 3390 lu), au-delà de la limite de compressibilité.
+
+⇒ soit collision plus robuste que TRT pour τ→0.5 dans le noyau (régularisée
+récursive, cumulant, KBC), soit **limiter à 2–3 niveaux** (3 niveaux : noyau à
+τ⁺ ≈ 0.5015, jouable car stratifié quasi-laminaire). Décision à l'Étape B.
+
+**Alternative loi tanh exacte** : ISLBM (He, Luo & Dembo 1996 — streaming +
+interpolation) ou LBM volumes finis reproduiraient l'Éq. 2.104 exactement, au prix
+de la diffusion numérique d'interpolation — hors scope de ce plan (référence).
+
 ## 1. Point critique n°1 — Rescaling des f^neq aux interfaces (le risque annoncé)
 
 ### 1.1 Le problème
@@ -28,30 +77,47 @@ d'ondes acoustiques parasites. À Ra=1e10 le f^neq près des parois est énorme
 1. **Ne jamais interpoler f** aux interfaces. Transférer les **moments** :
    ρ, u, T (conservés par interpolation standard), puis le non-équilibre :
    f^neq_grossier reconstruit depuis les distributions du côté grossier.
-2. **Rescaling du non-équilibre** : f^neq_fin = ξ · f^neq_grossier avec :
-   - **ξ = τ_fin/τ_grossier** (facteur de rescaling visqueux standard, Lagrava et al. 2015,
-     Rohde et al. 2006) — préserve le flux de quantité de mouvement à travers le
-     changement de viscosité (τ ∝ ν et le f^neq doit être rescalé par le même rapport
-     pour que ν·∂u reste continu à l'interface).
-   - **TRT (Λ=3/16)** : ξ porte sur les composantes **odd/even séparément** :
-     ξ_odd = τ⁺_fin/τ⁺_grossier, ξ_even = 1 (première approximation ; le facteur
-     précis pour les composantes even est ξ_even = (τ⁻/τ⁺)_fin/(τ⁻/τ⁺)_grossier si
-     on veut préserver exactement la relaxation — à valider numériquement, cf. §4.3).
-   - **Double distribution (T scalaire)** : même rescaling pour g^neq avec
-     ξ_thermal = τ_t,fin/τ_t,grossier (ν_t/α_t local inclus : τ effectif par nœud,
-     cf. §2.3).
+2. **Rescaling du non-équilibre (acoustic scaling, Dupuis & Chopard 2003)** :
+   f^neq_fin = **(1/2)·ξ·f^neq_grossier** avec :
+   - **facteur 1/2** : vient de Δt_fin = Δt_grossier/2 (acoustic scaling) — le
+     f^neq est un flux temporel (τ·contrainte), il se réduit avec le pas de temps.
+     **Oublier le 1/2 produit exactement le bruit acoustique que le plan évite.**
+   - **ξ = τ_fin/τ_grossier** (rapport des temps de relaxation, Lagrava et al. 2015,
+     Rohde et al. 2006) — préserve la contrainte visqueuse ν·∂u à travers le
+     changement de viscosité.
+   - **TRT (Λ=3/16)** : le ratio porte sur la partie **paire** (le tenseur des
+     contraintes π^even, relaxée par τ⁺) :
+     **f^neq,fin_even = (1/2)·(τ⁺_fin/τ⁺_grossier)·f^neq,grossier_even** ;
+     la partie **impaire** (π^odd, relaxée par τ−, liée à la partie anti-symétrique
+     du flux) garde ξ_odd = 1/2 en première approximation (le facteur exact
+     (1/2)·(τ⁻/τ⁺)_fin/(τ⁻/τ⁺)_grossier est à valider numériquement, cf. §4).
+   - **Double distribution (T scalaire)** : idem pour g^neq — partie paire avec
+     (1/2)·(τ_t,fin/τ_t,grossier), τ effectif par nœud (ν_t/α_t inclus, cf. §2.3).
 3. **Conservation explicite** : après transfert, corriger ρ_fin pour que la masse
    totale soit conservée (comme le garde-fou `masse = 1.000018` actuel) et u_fin
    pour la quantité de mouvement.
 
-### 1.3 Smagorinsky/dynamique à travers l'interface
+### 1.3 Plancher τ⁺ et niveaux — au niveau GROSSIER
+
+À ν physique constant, **ν en unités réseau double sur le niveau fin** (ν_lu =
+ν·dt/Δx², dt_fin = dt_grossier/2, Δx_fin = Δx/2 ⇒ ν_lu,fin = 2·ν_lu,grossier).
+Le plancher de stabilité TRT **τ⁺ ≥ 0.506 doit donc être imposé au niveau
+grossier, pas au niveau fin** — c'est l'inverse de l'intuition : le niveau fin,
+avec ν_lu plus grand, est PLUS stable ; le grossier est le limiteur.
+
+Conséquence : ν_t,fin en unités réseau est aussi ~2× ν_t,grossier (à |S| donné)
+— le garde-fou par niveau doit être calculé avec ν_lu LOCAL à chaque niveau,
+jamais une valeur globale.
+
+### 1.4 Smagorinsky/dynamique à travers l'interface
 
 - ν_t est calculé **par nœud** avec Δx local : Δ_fin = Δx/2 → νsm_fin ∝ (Δx/2)²|S|.
   Le saut de ν_t à l'interface est physique (le filtre change), mais **doit être
   lissé** : moyenne box sur 2–3 nœuds de part et d'autre de l'interface (régularisation
   du même type que l'Éq. 2.62 déjà implémentée).
 - Mode dynamique (--dynamic-smag) : ν_t/α_t rescalés aussi (τ effectif change),
-  même garde-fou τ_floor par niveau.
+  garde-fou τ_floor calculé avec ν_lu LOCAL par niveau (cf. §1.3 : le grossier
+  est le limiteur).
 
 ## 2. Architecture proposée (crate séparé)
 
