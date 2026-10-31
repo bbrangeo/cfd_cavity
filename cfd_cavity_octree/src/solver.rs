@@ -845,6 +845,132 @@ impl CavitySolver {
         }
         None
     }
+
+    // -------------------------------------------------------------------
+    // Étape G : snapshots binaires multi-niveaux (--snapshot-every /
+    // --restart, port du crate uniforme src/snapshot.rs + solver.rs
+    // l.228-262 « init_from_fields »)
+    // -------------------------------------------------------------------
+
+    /// Extrait les champs macroscopiques (rho/ux/uy/temp) des niveaux dans
+    /// l'ordre canonique du snapshot : coarse L0, bloc chaud L1, bloc froid
+    /// L1, [sous-niveau chaud L2, sous-niveau froid L2 si levels=3].
+    pub fn level_fields(&self) -> Vec<crate::snapshot::LevelFields> {
+        let field = |lvl: &LbmLevel| crate::snapshot::LevelFields {
+            nx: lvl.nx,
+            ny: lvl.ny,
+            rho: lvl.rho.clone(),
+            ux: lvl.ux.clone(),
+            uy: lvl.uy.clone(),
+            temp: lvl.temp.clone(),
+        };
+        let mut out = vec![field(&self.coarse)];
+        for block in &self.blocks {
+            out.push(field(&block.fine));
+        }
+        if self.levels >= 3 {
+            for block in &self.blocks {
+                if let Some(sub) = &block.sub {
+                    out.push(field(&sub.lvl));
+                }
+            }
+        }
+        out
+    }
+
+    /// Construit un snapshot complet (niveaux + pas) de l'état courant.
+    pub fn snapshot(&self, step: u64) -> crate::snapshot::Snapshot {
+        crate::snapshot::Snapshot {
+            levels: self.levels,
+            step,
+            grids: self.level_fields(),
+        }
+    }
+
+    /// Réinitialise les champs depuis un snapshot (option --restart, port du
+    /// `init_from_fields` du crate uniforme). Les dims de CHAQUE grille du
+    /// snapshot doivent matcher exactement celles du solveur (même layout :
+    /// pas d'interpolation inter-grille en Étape G — erreur claire sinon).
+    /// Reconstruit f/g depuis les équilibres (même logique que le crate
+    /// uniforme), impose le no-slip sur les parois et remet le compteur de
+    /// pas à zéro.
+    pub fn set_from_snapshot(&mut self, snap: &crate::snapshot::Snapshot) -> Result<(), String> {
+        let n_expected = if self.levels == 2 { 3 } else { 5 };
+        if snap.levels != self.levels || snap.grids.len() != n_expected {
+            return Err(format!(
+                "restart : snapshot levels={} ({} grilles) incompatible avec le solveur levels={} ({} grilles attendues)",
+                snap.levels,
+                snap.grids.len(),
+                self.levels,
+                n_expected
+            ));
+        }
+        // Match strict des dims, grille par grille (ordre canonique).
+        let dims_solver = {
+            let mut d = vec![(self.coarse.nx, self.coarse.ny)];
+            for b in &self.blocks {
+                d.push((b.fine.nx, b.fine.ny));
+            }
+            if self.levels >= 3 {
+                for b in &self.blocks {
+                    if let Some(sub) = &b.sub {
+                        d.push((sub.lvl.nx, sub.lvl.ny));
+                    }
+                }
+            }
+            d
+        };
+        for (gi, ((snx, sny), (dx, dy))) in snap.grids.iter().map(|g| (g.nx, g.ny)).zip(dims_solver).enumerate() {
+            if (snx, sny) != (dx, dy) {
+                return Err(format!(
+                    "restart : grille {gi} du snapshot {snx}x{sny} ≠ solveur {dx}x{dy} (même layout requis — pas d'interpolation inter-grille en Étape G)"
+                ));
+            }
+        }
+
+        // Injection des champs + reconstruction f/g = équilibres (même
+        // logique que le crate uniforme `init_from_fields` : feq/geq depuis
+        // les moments, puis remake macroscopique).
+        let inject = |lvl: &mut LbmLevel, g: &crate::snapshot::LevelFields| {
+            let n = lvl.nx * lvl.ny;
+            for k in 0..n {
+                let r = g.rho[k];
+                let un = g.ux[k];
+                let vn = g.uy[k];
+                let tn = g.temp[k];
+                lvl.rho[k] = r;
+                lvl.ux[k] = un;
+                lvl.uy[k] = vn;
+                lvl.temp[k] = tn;
+                for i in 0..9 {
+                    lvl.f[k][i] = feq(i, r, un, vn);
+                    lvl.g[k][i] = geq(i, tn, un, vn);
+                }
+            }
+        };
+        inject(&mut self.coarse, &snap.grids[0]);
+        for (bi, block) in self.blocks.iter_mut().enumerate() {
+            inject(&mut block.fine, &snap.grids[1 + bi]);
+        }
+        if self.levels >= 3 {
+            for (bi, block) in self.blocks.iter_mut().enumerate() {
+                if let Some(sub) = &mut block.sub {
+                    inject(&mut sub.lvl, &snap.grids[3 + bi]);
+                }
+            }
+        }
+
+        // No-slip strict sur les parois (l'export peut y laisser un résidu
+        // de vitesse — même remarque que le crate uniforme).
+        enforce_wall_velocity(&mut self.coarse);
+        for block in &mut self.blocks {
+            enforce_wall_velocity_block(&mut block.fine, block.hot_wall, block.cold_wall);
+            if let Some(sub) = &mut block.sub {
+                enforce_wall_velocity_block(&mut sub.lvl, sub.hot_wall, sub.cold_wall);
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Recalcule ρ, u, T d'un sous-ensemble de nœuds depuis les distributions

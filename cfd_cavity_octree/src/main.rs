@@ -41,6 +41,12 @@ struct Args {
     nu_sm_min: f64,
     /// Étape D : ratio filtre test η = Δ/Δ̃ (défaut 2.0).
     eta_test: f64,
+    /// Étape G : export atomique d'un snapshot binaire toutes les N étapes
+    /// (défaut 0 = désactivé) ; reprise via --restart.
+    snapshot_every: usize,
+    /// Étape G : snapshot binaire de départ (initialise les champs du
+    /// solveur octree ; même layout requis — pas d'interpolation).
+    restart: Option<String>,
 }
 
 impl Default for Args {
@@ -66,6 +72,8 @@ impl Default for Args {
             smag_alpha: 0.5,
             nu_sm_min: -0.1,
             eta_test: 2.0,
+            snapshot_every: 0,
+            restart: None,
         }
     }
 }
@@ -95,6 +103,11 @@ Options (clé=valeur) :
   --smag-alpha <f64>      exposant α de l'interpolation mixte [défaut: 0.5]
   --nu-sm-min <f64>       borne νsm ≥ nu_sm_min·ν [défaut: -0.1]
   --eta-test <f64>        ratio filtre test η = Δ/Δ̃ [défaut: 2.0]
+  --snapshot-every <usize> export atomique de snapshot.bin toutes les N étapes
+                          [défaut: 0 = désactivé] ; reprise via --restart
+  --restart <path>        snapshot binaire de départ (initialise les champs
+                          du solveur octree ; même layout requis — les dims
+                          de chaque grille doivent matcher exactement)
 ";
 
 fn parse_args() -> Result<Args, String> {
@@ -160,6 +173,12 @@ fn parse_args() -> Result<Args, String> {
                     .parse()
                     .map_err(|_| format!("--eta-test : flottant attendu, lu '{value}'"))?
             }
+            "snapshot-every" | "snapshot_every" => {
+                args.snapshot_every = value
+                    .parse()
+                    .map_err(|_| format!("--snapshot-every : entier attendu, lu '{value}'"))?
+            }
+            "restart" => args.restart = Some(value),
             "ra" => args.ra = value.parse().map_err(|_| format!("--ra : flottant attendu, lu '{value}'"))?,
             "pr" => args.pr = value.parse().map_err(|_| format!("--pr : flottant attendu, lu '{value}'"))?,
             "steps" => args.steps = value.parse().map_err(|_| format!("--steps : entier attendu, lu '{value}'"))?,
@@ -275,6 +294,28 @@ fn main() {
         );
     }
 
+    // --- Étape G : option --restart (initialisation depuis un snapshot
+    // binaire multi-niveaux, port du crate uniforme src/main.rs l.95-119).
+    // Même layout requis : les dims de chaque grille doivent matcher —
+    // erreur claire et sortie code 6 sinon. ---
+    if let Some(ref snap_path) = args.restart {
+        let snap = cfd_cavity_octree::snapshot::read_snapshot(Path::new(snap_path))
+            .unwrap_or_else(|e| {
+                eprintln!("Erreur de lecture du snapshot {snap_path} : {e}");
+                std::process::exit(6);
+            });
+        println!(
+            "Restart depuis {snap_path} : snapshot levels={} ({} grilles), pas {} — injection des champs du solveur octree",
+            snap.levels,
+            snap.grids.len(),
+            snap.step
+        );
+        if let Err(e) = sim.set_from_snapshot(&snap) {
+            eprintln!("Erreur de restart : {e}");
+            std::process::exit(6);
+        }
+    }
+
     println!(
         "Unités réseau : nu = {:.6} | alpha = {:.6} | tau+ = {:.4}/{:.4}{} | beta_eff = {:.4e}/{:.4e}{} | {} niveaux | {} nœuds (grossier {} + fins {})",
         sim.nu_lu,
@@ -327,6 +368,13 @@ fn main() {
     let mut noise_iface_max = 0.0f64;
     let start = Instant::now();
 
+    // --- Étape G : export périodique (--snapshot-every N, 0 = désactivé) ---
+    let snap_out_path = if args.snapshot_every > 0 {
+        Some(out.join("snapshot.bin"))
+    } else {
+        None
+    };
+
     for step in 0..args.steps {
         sim.step_cavity();
 
@@ -377,6 +425,29 @@ fn main() {
                 std::process::exit(2);
             }
         }
+
+        // --- Étape G : export périodique du snapshot (écriture atomique
+        // tmp + rename, port du crate uniforme src/main.rs l.274-291) ---
+        if let Some(path) = &snap_out_path {
+            if (step + 1) % args.snapshot_every == 0 {
+                let snap = sim.snapshot(step as u64);
+                if let Err(e) = cfd_cavity_octree::snapshot::write_snapshot_atomic(path, &snap) {
+                    eprintln!("Erreur d'export du snapshot au pas {step} : {e}");
+                    std::process::exit(5);
+                }
+                println!("snapshot exporté au pas {step}");
+            }
+        }
+    }
+
+    // --- Étape G : export final du snapshot (si activé) ---
+    if let Some(path) = &snap_out_path {
+        let snap = sim.snapshot(args.steps as u64);
+        if let Err(e) = cfd_cavity_octree::snapshot::write_snapshot_atomic(path, &snap) {
+            eprintln!("Erreur d'export du snapshot final : {e}");
+            std::process::exit(5);
+        }
+        println!("snapshot final exporté au pas {}", args.steps - 1);
     }
 
     let elapsed = start.elapsed();

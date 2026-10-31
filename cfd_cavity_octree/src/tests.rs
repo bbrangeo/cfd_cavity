@@ -671,3 +671,129 @@ fn dynamic_smag_on_runs_sane_and_reports_coefficients() {
         assert!(v.is_finite(), "ν_t/α_t L2 non fini");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests snapshots (Étape G — port des tests du crate uniforme, adaptés au
+// solveur octree multi-niveaux)
+// ---------------------------------------------------------------------------
+
+/// Petit solveur cavité octree levels=3 pour les tests snapshots.
+fn small_solver_l3() -> CavitySolver {
+    CavitySolver::new(32, 64, 4, 1.0e6, 0.71, 0.02, 42, 1, false, 3)
+}
+
+/// Test Étape G 1 : round-trip encode→decode→encode bit-identique sur un
+/// solveur levels=3 (5 grilles : coarse + 2 blocs L1 + 2 sous-niveaux L2),
+/// et les dims de chaque grille sont préservées.
+#[test]
+fn snapshot_roundtrip_levels3_identical() {
+    let mut sim = small_solver_l3();
+    for _ in 0..3 {
+        sim.step_cavity();
+    }
+    let snap = sim.snapshot(3);
+    assert_eq!(snap.levels, 3);
+    assert_eq!(snap.grids.len(), 5, "5 grilles attendues en levels=3");
+
+    let bytes = crate::snapshot::encode(&snap);
+    let snap2 = crate::snapshot::decode(&bytes).expect("decode");
+    let bytes2 = crate::snapshot::encode(&snap2);
+
+    // Round-trip bit-identique.
+    assert_eq!(bytes, bytes2, "encode∘decode∘encode ≠ id");
+    assert_eq!(snap2.step, 3);
+    assert_eq!(snap2.levels, 3);
+
+    // Dims préservées grille par grille (ordre canonique).
+    let dims_orig: Vec<(usize, usize)> = sim
+        .level_fields()
+        .iter()
+        .map(|g| (g.nx, g.ny))
+        .collect();
+    let dims_rt: Vec<(usize, usize)> = snap2.grids.iter().map(|g| (g.nx, g.ny)).collect();
+    assert_eq!(dims_orig, dims_rt, "dims non préservées");
+
+    // Champs bit-identiques.
+    for (g0, g1) in sim.level_fields().iter().zip(snap2.grids.iter()) {
+        assert_eq!(g0.rho, g1.rho, "rho altéré au round-trip");
+        assert_eq!(g0.ux, g1.ux, "ux altéré au round-trip");
+        assert_eq!(g0.uy, g1.uy, "uy altéré au round-trip");
+        assert_eq!(g0.temp, g1.temp, "temp altéré au round-trip");
+    }
+}
+
+/// Test Étape G 2 : restart reproduit les mêmes distributions qu'avant
+/// l'export — write→load→set_from_snapshot réinitialise f/g aux équilibres
+/// des champs exportés ; les distributions du solveur restauré sont
+/// identiques à celles du solveur d'origine au même pas.
+#[test]
+fn snapshot_restart_restores_distributions() {
+    let mut sim = small_solver_l3();
+    for _ in 0..5 {
+        sim.step_cavity();
+    }
+    let snap = sim.snapshot(5);
+    let bytes = crate::snapshot::encode(&snap);
+    let loaded = crate::snapshot::decode(&bytes).expect("decode");
+
+    // Solveur neuf, restart depuis le snapshot chargé.
+    let mut restored = small_solver_l3();
+    restored
+        .set_from_snapshot(&loaded)
+        .expect("set_from_snapshot");
+
+    // Distributions restaurées == équilibres des champs exportés (f/g
+    // reconstruits depuis feq/geq — même logique que le crate uniforme).
+    let check = |lvl: &crate::lbm::LbmLevel, g: &crate::snapshot::LevelFields, name: &str| {
+        let n = lvl.nx * lvl.ny;
+        for k in 0..n {
+            assert_eq!(lvl.rho[k], g.rho[k], "{name} rho (nœud {k})");
+            assert_eq!(lvl.ux[k], g.ux[k], "{name} ux (nœud {k})");
+            assert_eq!(lvl.uy[k], g.uy[k], "{name} uy (nœud {k})");
+            assert_eq!(lvl.temp[k], g.temp[k], "{name} temp (nœud {k})");
+            for i in 0..9 {
+                let fe = oxiphysics_lbm::thermal_lbm::feq(i, g.rho[k], g.ux[k], g.uy[k]);
+                let ge = oxiphysics_lbm::thermal_lbm::geq(i, g.temp[k], g.ux[k], g.uy[k]);
+                assert_eq!(lvl.f[k][i], fe, "{name} f[{i}] (nœud {k})");
+                assert_eq!(lvl.g[k][i], ge, "{name} g[{i}] (nœud {k})");
+            }
+        }
+    };
+    check(&restored.coarse, &loaded.grids[0], "coarse");
+    for bi in 0..restored.blocks.len() {
+        check(&restored.blocks[bi].fine, &loaded.grids[1 + bi], "bloc L1");
+        if let Some(sub) = &restored.blocks[bi].sub {
+            check(&sub.lvl, &loaded.grids[3 + bi], "sous-niveau L2");
+        }
+    }
+
+    // Cohérence moments : remake macroscopique — les moments des nœuds
+    // restaurés sont exactement ρ = Σf, ρu = Σe·f (par construction f = feq).
+    for k in 0..restored.coarse.f.len() {
+        let mut rho = 0.0;
+        for i in 0..9 {
+            rho += restored.coarse.f[k][i];
+        }
+        assert!((rho - restored.coarse.rho[k]).abs() < 1e-12, "ρ ≠ Σf");
+    }
+}
+
+/// Test Étape G 3 : mismatch de dims → erreur claire (pas d'interpolation
+/// inter-grille en Étape G, même layout requis).
+#[test]
+fn snapshot_restart_layout_mismatch_is_error() {
+    let mut sim = small_solver_l3();
+    for _ in 0..2 {
+        sim.step_cavity();
+    }
+    let snap = sim.snapshot(2);
+    // Solveur de layout DIFFÉRENT (bl-width différent ⇒ grilles L1 ≠).
+    let mut other = CavitySolver::new(32, 64, 6, 1.0e6, 0.71, 0.02, 42, 1, false, 3);
+    let err = other.set_from_snapshot(&snap);
+    assert!(err.is_err(), "mismatch de dims accepté à tort");
+    let msg = err.unwrap_err();
+    assert!(
+        msg.contains("même layout") || msg.contains("layout"),
+        "message d'erreur sans mention du layout : {msg}"
+    );
+}

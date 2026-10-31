@@ -23,6 +23,7 @@ pub mod grid;
 pub mod interface;
 pub mod lbm;
 pub mod smag;
+pub mod snapshot;
 pub mod solver;
 
 #[cfg(test)]
