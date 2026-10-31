@@ -32,6 +32,15 @@ struct Args {
     /// Nombre de niveaux : 2 = config V2 (L0+L1), 3 = escalier tanh V6
     /// (bande L2 dx/4 imbriquée, Étape F).
     levels: usize,
+    /// Étape D : flag --dynamic-smag (booléen sans valeur, même sémantique
+    /// que src/cli.rs du crate uniforme).
+    dynamic_smag: bool,
+    /// Étape D : exposant α de l'interpolation mixte (défaut 0.5).
+    smag_alpha: f64,
+    /// Étape D : borne νsm ≥ nu_sm_min·ν (défaut -0.1).
+    nu_sm_min: f64,
+    /// Étape D : ratio filtre test η = Δ/Δ̃ (défaut 2.0).
+    eta_test: f64,
 }
 
 impl Default for Args {
@@ -48,11 +57,15 @@ impl Default for Args {
             sample_start: 100_000,
             sample_every: 100,
             progress_every: 1_000,
-            out: String::from("output/ra1e6_octree"),
+            out: String::from("output/runs_octree/ra1e6_octree"),
             jobs: 1,
             seed: 42,
             odd_exact: false,
             levels: 2,
+            dynamic_smag: false,
+            smag_alpha: 0.5,
+            nu_sm_min: -0.1,
+            eta_test: 2.0,
         }
     }
 }
@@ -70,13 +83,18 @@ Options (clé=valeur) :
   --sample-start <usize>  début du moyennage Nuc         [défaut: 100000]
   --sample-every <usize>  stride de moyennage            [défaut: 100]
   --progress-every <usize> cadence d'affichage           [défaut: 1000]
-  --out <path>            répertoire de sortie           [défaut: output/ra1e6_octree]
+  --out <path>            répertoire de sortie           [défaut: output/runs_octree/ra1e6_octree]
   --jobs <usize>          threads de calcul (1=mono)     [défaut: 1]
   --seed <u64>            graine RNG                     [défaut: 42]
   --odd-exact             variante ξ_odd exacte ((1/2)·τ⁻_fin/τ⁻_grossier,
                           plan §1.2/§4) ; défaut : ξ_odd = 1/2
   --levels <usize>        niveaux : 2 = config V2, 3 = escalier tanh V6
                           (bande L2 dx/4, Étape F)  [défaut: 2]
+  --dynamic-smag          modèle d'échelles mixtes dynamiques (Étape D,
+                          porte V5) ; défaut : OFF (booléen sans valeur)
+  --smag-alpha <f64>      exposant α de l'interpolation mixte [défaut: 0.5]
+  --nu-sm-min <f64>       borne νsm ≥ nu_sm_min·ν [défaut: -0.1]
+  --eta-test <f64>        ratio filtre test η = Δ/Δ̃ [défaut: 2.0]
 ";
 
 fn parse_args() -> Result<Args, String> {
@@ -100,6 +118,18 @@ fn parse_args() -> Result<Args, String> {
             i += 1;
             continue;
         }
+        // Étape D : flag booléen SANS valeur --dynamic-smag (même sémantique
+        // que src/cli.rs du crate uniforme : présence = activé).
+        if key == "dynamic-smag" || key == "dynamic_smag" {
+            match inline_val {
+                Some(v) if v == "true" || v == "1" => args.dynamic_smag = true,
+                Some(v) if v == "false" || v == "0" => args.dynamic_smag = false,
+                Some(v) => return Err(format!("--dynamic-smag : booléen attendu, lu '{v}'")),
+                None => args.dynamic_smag = true, // présence = activé
+            }
+            i += 1;
+            continue;
+        }
 
         let value = match inline_val {
             Some(v) => v,
@@ -115,6 +145,21 @@ fn parse_args() -> Result<Args, String> {
                 args.bl_width = value.parse().map_err(|_| format!("--bl-width : entier attendu, lu '{value}'"))?
             }
             "levels" => args.levels = value.parse().map_err(|_| format!("--levels : entier attendu, lu '{value}'"))?,
+            "smag-alpha" | "smag_alpha" => {
+                args.smag_alpha = value
+                    .parse()
+                    .map_err(|_| format!("--smag-alpha : flottant attendu, lu '{value}'"))?
+            }
+            "nu-sm-min" | "nu_sm_min" => {
+                args.nu_sm_min = value
+                    .parse()
+                    .map_err(|_| format!("--nu-sm-min : flottant attendu, lu '{value}'"))?
+            }
+            "eta-test" | "eta_test" => {
+                args.eta_test = value
+                    .parse()
+                    .map_err(|_| format!("--eta-test : flottant attendu, lu '{value}'"))?
+            }
             "ra" => args.ra = value.parse().map_err(|_| format!("--ra : flottant attendu, lu '{value}'"))?,
             "pr" => args.pr = value.parse().map_err(|_| format!("--pr : flottant attendu, lu '{value}'"))?,
             "steps" => args.steps = value.parse().map_err(|_| format!("--steps : entier attendu, lu '{value}'"))?,
@@ -146,6 +191,13 @@ fn parse_args() -> Result<Args, String> {
     }
     if args.ra <= 0.0 || args.pr <= 0.0 {
         return Err("ra et pr doivent être > 0".into());
+    }
+    // Étape D : validations copiées du crate uniforme (src/cli.rs).
+    if !(args.smag_alpha >= 0.0 && args.smag_alpha <= 1.0) || !args.smag_alpha.is_finite() {
+        return Err("smag-alpha doit être ∈ [0, 1] (0 = Smagorinsky pur, 1 = similarité pure)".into());
+    }
+    if !(args.eta_test >= 1.0) || !args.eta_test.is_finite() {
+        return Err("eta-test doit être ≥ 1 (ratio filtre test/grille)".into());
     }
     if !(args.levels == 2 || args.levels == 3) {
         return Err("levels doit valoir 2 (config V2) ou 3 (escalier tanh V6)".into());
@@ -213,6 +265,15 @@ fn main() {
         args.odd_exact,
         args.levels,
     );
+    // Étape D : modèle d'échelles mixtes dynamiques (porte V5) — setter du
+    // solveur, même sémantique que le crate uniforme.
+    sim.set_dynamic_sgs(args.dynamic_smag, args.smag_alpha, args.nu_sm_min, args.eta_test);
+    if args.dynamic_smag {
+        println!(
+            "LES dynamique (Étape D) : alpha_mixte = {} | nu_sm_min = {} | eta_test = {}",
+            args.smag_alpha, args.nu_sm_min, args.eta_test
+        );
+    }
 
     println!(
         "Unités réseau : nu = {:.6} | alpha = {:.6} | tau+ = {:.4}/{:.4}{} | beta_eff = {:.4e}/{:.4e}{} | {} niveaux | {} nœuds (grossier {} + fins {})",
@@ -289,9 +350,20 @@ fn main() {
             let nuf = nusselt_cold(&sim.coarse);
             let nucl0 = nusselt_hot_link0(&sim.coarse);
             let nufine = nusselt_hot_fine(&sim.blocks[hot_block_idx].fine, lx_coarse);
+            // Étape D : diagnostics LES dynamique en suffixe de ligne —
+            // ne casse pas le format existant en mode OFF.
+            let dyn_suffix = if args.dynamic_smag {
+                format!(
+                    " | cs_dyn = {:.4} | kap_dyn = {:.4} | nu_t_max = {:.3e}",
+                    sim.cs_dyn_mean, sim.kappa_dyn_mean, sim.nu_t_max
+                )
+            } else {
+                String::new()
+            };
             let msg = format!(
-                "step {:>7} | max_rho_dev = {:.3e} | max_rho_dev_ifaces = {:.3e} | masse = {:.6} | Nuc = {:.4} | Nuc_link0 = {:.4} | Nuf = {:.4} | Nu_fin = {:.4} | max_u = {:.5}",
-                step, noise.max_rho_dev, noise.max_rho_dev_ifaces, noise.masse, nuc, nucl0, nuf, nufine, sim.max_u_all()
+                "step {:>7} | max_rho_dev = {:.3e} | max_rho_dev_ifaces = {:.3e} | masse = {:.6} | Nuc = {:.4} | Nuc_link0 = {:.4} | Nuf = {:.4} | Nu_fin = {:.4} | max_u = {:.5}{}",
+                step, noise.max_rho_dev, noise.max_rho_dev_ifaces, noise.masse, nuc, nucl0, nuf, nufine, sim.max_u_all(),
+                dyn_suffix
             );
             println!("{msg}");
             log_lines.push(msg);
@@ -325,7 +397,7 @@ fn main() {
 
     // --- Références et verdict porte V2 ---
     // Like-for-like (2ᵉ liaison, estimateur Nuc standard) : baseline
-    // uniforme Ra=1e6 = 2.3585 (output/ra1e6_full, grad 2ᵉ liaison).
+    // uniforme Ra=1e6 = 2.3585 (output/runs_octree/ra1e6_full, grad 2ᵉ liaison).
     // 1ʳᵉ liaison (estimateur nusselt_hot_link0, artefact mur) : 1.3660.
     let nuc_ref = 2.3585;
     let nucl0_ref = 1.3660;

@@ -49,6 +49,7 @@ use crate::interface::{
     RescalingFactors,
 };
 use crate::lbm::{LbmLevel, RelaxTimes};
+use crate::smag::compute_dynamic_sgs_level;
 use oxiphysics_lbm::lattice::D2Q9_VELOCITIES;
 use oxiphysics_lbm::thermal_lbm::{feq, geq};
 
@@ -125,6 +126,10 @@ pub struct CavityBlock {
     /// Bande L2 imbriquée (V6, `--levels 3`) : None en config V2
     /// (`--levels 2`).
     pub sub: Option<NestedBlock>,
+    /// ν_t précalculé par nœud L1 (Étape D, mode dynamique uniquement).
+    pub nu_t_pre: Vec<f64>,
+    /// α_t précalculé par nœud L1 (Étape D).
+    pub alpha_t_pre: Vec<f64>,
 }
 
 /// Bande L2 imbriquée (V6, escalier tanh §0.1) : interface B dx/2 ⇄ dx/4.
@@ -154,6 +159,10 @@ pub struct NestedBlock {
     /// de streaming du niveau L2.
     pub hot_wall: bool,
     pub cold_wall: bool,
+    /// ν_t précalculé par nœud L2 (Étape D, mode dynamique uniquement).
+    pub nu_t_pre: Vec<f64>,
+    /// α_t précalculé par nœud L2 (Étape D).
+    pub alpha_t_pre: Vec<f64>,
 }
 
 /// Solveur cavité DHC 2D sur octree (Étape B, porte V2, plan §3.3) étendu
@@ -191,6 +200,26 @@ pub struct CavitySolver {
     pub jobs: usize,
     /// PRNG perturbation initiale (xorshift64*, copie crate uniforme).
     rng: Rng,
+    // --- Étape D : modèle d'échelles mixtes dynamiques (porte V5) ---
+    /// Flag --dynamic-smag (défaut false : mode OFF, chemin inchangé).
+    pub dynamic_smag: bool,
+    /// Exposant α de l'interpolation mixte (défaut 0.5, moyenne géométrique).
+    pub smag_alpha: f64,
+    /// Borne νsm ≥ nu_sm_min·ν (défaut thèse : −0.1).
+    pub nu_sm_min: f64,
+    /// Ratio filtre test η = Δ/Δ̃ (défaut 2.0).
+    pub eta_test: f64,
+    /// ν_t précalculé par nœud L0 (mode dynamique uniquement).
+    pub nu_t_pre_coarse: Vec<f64>,
+    /// α_t précalculé par nœud L0 (mode dynamique uniquement).
+    pub alpha_t_pre_coarse: Vec<f64>,
+    /// Diagnostics du dernier pas (mode dynamique) : C^ν_dyn moyen/max,
+    /// C^κ_dyn moyen/max, ν_t max (tous niveaux).
+    pub cs_dyn_mean: f64,
+    pub cs_dyn_max: f64,
+    pub kappa_dyn_mean: f64,
+    pub kappa_dyn_max: f64,
+    pub nu_t_max: f64,
 }
 
 impl CavitySolver {
@@ -313,6 +342,8 @@ impl CavitySolver {
                     fy: vec![0.0; sn1 * sny1],
                     hot_wall: hot,
                     cold_wall: cold,
+                    nu_t_pre: vec![0.0; sn1 * sny1],
+                    alpha_t_pre: vec![0.0; sn1 * sny1],
                 })
             } else {
                 None
@@ -325,6 +356,8 @@ impl CavitySolver {
                 hot_wall: hot,
                 cold_wall: cold,
                 sub,
+                nu_t_pre: vec![0.0; n1],
+                alpha_t_pre: vec![0.0; n1],
             });
         }
 
@@ -344,9 +377,32 @@ impl CavitySolver {
             fy_coarse: vec![0.0; nx0 * ny0],
             jobs: jobs.max(1),
             rng: Rng::new(seed),
+            // Étape D : mode dynamique OFF par défaut (setter
+            // `set_dynamic_sgs`), diagnostics à zéro.
+            dynamic_smag: false,
+            smag_alpha: 0.5,
+            nu_sm_min: -0.1,
+            eta_test: 2.0,
+            nu_t_pre_coarse: vec![0.0; nx0 * ny0],
+            alpha_t_pre_coarse: vec![0.0; nx0 * ny0],
+            cs_dyn_mean: 0.0,
+            cs_dyn_max: 0.0,
+            kappa_dyn_mean: 0.0,
+            kappa_dyn_max: 0.0,
+            nu_t_max: 0.0,
         };
         solver.init_cavity();
         solver
+    }
+
+    /// Active/désactive le modèle d'échelles mixtes dynamiques (Étape D) —
+    /// même sémantique que le setter du crate uniforme (`CavitySolver::set_dynamic_sgs`,
+    /// solver.rs) : `on` = flag, `smag_alpha` ∈ [0, 1], `nu_sm_min`, `eta_test` ≥ 1.
+    pub fn set_dynamic_sgs(&mut self, on: bool, smag_alpha: f64, nu_sm_min: f64, eta_test: f64) {
+        self.dynamic_smag = on;
+        self.smag_alpha = smag_alpha;
+        self.nu_sm_min = nu_sm_min;
+        self.eta_test = eta_test;
     }
 
     /// Nombre total de nœuds (grossier + blocs fins + bandes L2, avec
@@ -458,7 +514,49 @@ impl CavitySolver {
     /// 4. couplage fin→grossier (§1.2) : moyenne 2×2 des coïncidents ;
     /// 5. moments des nœuds grossiers coïncidents recalculés depuis les
     ///    distributions injectées (la collision du pas suivant lit ρ, u, T).
+    ///
+    /// Étape D (--dynamic-smag, porte V5) : si `dynamic_smag`, les ν_t/α_t
+    /// par nœud sont recalculés par `smag::compute_dynamic_sgs_level` pour
+    /// L0 (ν_lu), L1 (2ν), L2 (4ν) AVANT CHAQUE collision (les ν_t sont
+    /// fonction de l'état instantané du niveau : L0 une fois par pas, L1 et
+    /// L2 à chaque sous-pas). En mode OFF, les Options restent None et le
+    /// chemin de collision est BITWISE IDENTIQUE (aucun calcul SGS).
+    ///
+    /// ⚠️ APPROXIMATION DOCUMENTÉE (rescaling interface, itération ultérieure
+    /// §2.3 du plan) : en Étape D on GARDE le rescaling ξ des f^neq avec le
+    /// τ moléculaire FIXÉ AU NIVEAU (precalculé à l'init dans
+    /// `RelaxTimes::from_nu_alpha` et `rescaling_factors*`) — le τ EFFECTIF
+    /// à Ra élevé (τ = 0.5 + 3·(ν + ν_t)) devrait entrer dans les facteurs
+    /// ξ pour être exact à Ra=1e10 ; l'approximation est acceptable ici car
+    /// ν_t/ν ≪ 1 dans les zones d'interface. Itération ultérieure.
     pub fn step_cavity(&mut self) {
+        // --- Étape D : précalcul SGS dynamique L0 (ν_lu, τ moléculaire
+        // effectif = 0.5 + 3·ν_lu) AVANT la collision L0. Tout est en
+        // unités lattice LOCALES du niveau (Δx = 1, §1.4). ---
+        let mut opt_nu_l0: Option<&[f64]> = None;
+        let mut opt_al_l0: Option<&[f64]> = None;
+        if self.dynamic_smag {
+            let tau_mol_l0 = 0.5 + 3.0 * self.nu_lu;
+            let (nu_t, alpha_t, cnu_mean, cnu_max, ck_mean, ck_max) =
+                compute_dynamic_sgs_level(
+                    &self.coarse,
+                    tau_mol_l0,
+                    self.smag_alpha,
+                    self.eta_test,
+                    self.nu_lu,
+                    self.alpha_lu,
+                    self.nu_sm_min,
+                );
+            self.nu_t_pre_coarse = nu_t;
+            self.alpha_t_pre_coarse = alpha_t;
+            self.cs_dyn_mean = cnu_mean;
+            self.cs_dyn_max = cnu_max;
+            self.kappa_dyn_mean = ck_mean;
+            self.kappa_dyn_max = ck_max;
+            opt_nu_l0 = Some(self.nu_t_pre_coarse.as_slice());
+            opt_al_l0 = Some(self.alpha_t_pre_coarse.as_slice());
+        }
+
         // --- 1. Niveau L0 (force Guo, CL crate uniforme) ---
         let beta_c = self.beta_eff_coarse;
         let jobs = self.jobs;
@@ -469,6 +567,8 @@ impl CavitySolver {
             &mut self.fy_coarse,
             false,
             jobs,
+            opt_nu_l0,
+            opt_al_l0,
         );
         stream_cavity(&mut self.coarse, jobs);
         apply_thermal_boundary_conditions(&mut self.coarse);
@@ -491,14 +591,48 @@ impl CavitySolver {
         let tau_fine = self.tau_fine;
         let beta_f = self.beta_eff_fine;
         let beta_sub = 0.25 * self.beta_eff_coarse; // §1.3 : /2 par niveau
+        // Étape D : τ moléculaires effectifs des niveaux fins (2ν, 4ν).
+        let tau_mol_l1 = 0.5 + 3.0 * 2.0 * self.nu_lu;
+        let tau_mol_l2 = 0.5 + 3.0 * 4.0 * self.nu_lu;
+        let (smag_alpha, eta_test, nu_sm_min) =
+            (self.smag_alpha, self.eta_test, self.nu_sm_min);
+        let dynamic = self.dynamic_smag;
         for bi in 0..self.blocks.len() {
             let block = &mut self.blocks[bi];
             let (wl, wr) = (block.hot_wall, block.cold_wall);
 
+            // --- Étape D : précalcul SGS L1 (2ν) AVANT le sous-pas 1 (état
+            // instantané du niveau L1 après couplage A) ---
+            let (opt_nu_l1, opt_al_l1) = if dynamic {
+                let (nu_t, alpha_t, _, _, _, _) = compute_dynamic_sgs_level(
+                    &block.fine,
+                    tau_mol_l1,
+                    smag_alpha,
+                    eta_test,
+                    2.0 * self.nu_lu,
+                    2.0 * self.alpha_lu,
+                    nu_sm_min,
+                );
+                block.nu_t_pre = nu_t;
+                block.alpha_t_pre = alpha_t;
+                (Some(block.nu_t_pre.as_slice()), Some(block.alpha_t_pre.as_slice()))
+            } else {
+                (None, None)
+            };
+
             // --- L1 sous-pas 1 : collide interior_only → stream block-aware
             // avec bounce-back EXACT sur les parois physiques (haut/bas +
             // mur collé) → CL thermiques block-aware → update → no-slip ---
-            collide_cavity(&mut block.fine, &tau_fine, beta_f, &mut block.fy, true, jobs);
+            collide_cavity(
+                &mut block.fine,
+                &tau_fine,
+                beta_f,
+                &mut block.fy,
+                true,
+                jobs,
+                opt_nu_l1,
+                opt_al_l1,
+            );
             stream_cavity_block(&mut block.fine, jobs, wl, wr, true, true);
             apply_thermal_boundary_conditions_block(&mut block.fine, wl, wr);
             update_macroscopic_guo(&mut block.fine, &block.fy, jobs);
@@ -511,8 +645,36 @@ impl CavitySolver {
                 let xi_down = sub.xi_down;
                 coarse_to_fine(&sub.grid, &block.fine, &mut sub.lvl, &xi_down);
                 let tau_sub = sub.tau;
-                for _ in 0..2 {
-                    collide_cavity(&mut sub.lvl, &tau_sub, beta_sub, &mut sub.fy, true, jobs);
+                for sp in 0..2 {
+                    // --- Étape D : précalcul SGS L2 (4ν) AVANT CHAQUE
+                    // sous-pas L2 (état instantané du niveau L2) ---
+                    let (opt_nu_l2, opt_al_l2) = if dynamic {
+                        let (nu_t, alpha_t, _, _, _, _) = compute_dynamic_sgs_level(
+                            &sub.lvl,
+                            tau_mol_l2,
+                            smag_alpha,
+                            eta_test,
+                            4.0 * self.nu_lu,
+                            4.0 * self.alpha_lu,
+                            nu_sm_min,
+                        );
+                        sub.nu_t_pre = nu_t;
+                        sub.alpha_t_pre = alpha_t;
+                        (Some(sub.nu_t_pre.as_slice()), Some(sub.alpha_t_pre.as_slice()))
+                    } else {
+                        (None, None)
+                    };
+                    let _ = sp;
+                    collide_cavity(
+                        &mut sub.lvl,
+                        &tau_sub,
+                        beta_sub,
+                        &mut sub.fy,
+                        true,
+                        jobs,
+                        opt_nu_l2,
+                        opt_al_l2,
+                    );
                     stream_cavity_block(&mut sub.lvl, jobs, wl, wr, true, true);
                     apply_thermal_boundary_conditions_block(&mut sub.lvl, wl, wr);
                     update_macroscopic_guo(&mut sub.lvl, &sub.fy, jobs);
@@ -527,8 +689,36 @@ impl CavitySolver {
                 refresh_moments_nodes(&mut block.fine, &idxs);
             }
 
+            // --- Étape D : précalcul SGS L1 AVANT le sous-pas 2 (l'état L1
+            // a été mis à jour par la restriction L2→L1) ---
+            let (opt_nu_l1, opt_al_l1) = if dynamic {
+                let (nu_t, alpha_t, _, _, _, _) = compute_dynamic_sgs_level(
+                    &block.fine,
+                    tau_mol_l1,
+                    smag_alpha,
+                    eta_test,
+                    2.0 * self.nu_lu,
+                    2.0 * self.alpha_lu,
+                    nu_sm_min,
+                );
+                block.nu_t_pre = nu_t;
+                block.alpha_t_pre = alpha_t;
+                (Some(block.nu_t_pre.as_slice()), Some(block.alpha_t_pre.as_slice()))
+            } else {
+                (None, None)
+            };
+
             // --- L1 sous-pas 2 ---
-            collide_cavity(&mut block.fine, &tau_fine, beta_f, &mut block.fy, true, jobs);
+            collide_cavity(
+                &mut block.fine,
+                &tau_fine,
+                beta_f,
+                &mut block.fy,
+                true,
+                jobs,
+                opt_nu_l1,
+                opt_al_l1,
+            );
             stream_cavity_block(&mut block.fine, jobs, wl, wr, true, true);
             apply_thermal_boundary_conditions_block(&mut block.fine, wl, wr);
             update_macroscopic_guo(&mut block.fine, &block.fy, jobs);
@@ -536,6 +726,23 @@ impl CavitySolver {
 
             // --- Restriction L1→L0 (stencil 9 centré, 1/ξ_A §1.2) ---
             fine_to_coarse(&block.grid, &block.fine, &mut self.coarse, &xi);
+        }
+
+        // --- Étape D : diagnostic ν_t max (tous niveaux, dernier pas) ---
+        if self.dynamic_smag {
+            let mut nt_max = self
+                .nu_t_pre_coarse
+                .iter()
+                .fold(0.0f64, |m, &v| m.max(v.abs()));
+            for block in &self.blocks {
+                nt_max = nt_max
+                    .max(block.nu_t_pre.iter().fold(0.0f64, |m, &v| m.max(v.abs())));
+                if let Some(sub) = &block.sub {
+                    nt_max = nt_max
+                        .max(sub.nu_t_pre.iter().fold(0.0f64, |m, &v| m.max(v.abs())));
+                }
+            }
+            self.nu_t_max = nt_max;
         }
 
         // --- 4. Moments coïncidents L0 recalculés (post-injection) ---

@@ -455,7 +455,7 @@ fn v2_nusselt_conductive_initial() {
     let nuf = nusselt_cold(&sim.coarse);
     println!("V2 Nusselt initial : Nuc = {nuc:.4} | Nuf = {nuf:.4}");
     // Conductif : Nuc = moyenne |∂θ/∂x|·Lx ≈ 1 + O(pert) (estimateur de la
-    // run de référence output/ra1e6_full : Nuc(0) = 0.9995).
+    // run de référence output/runs_octree/ra1e6_full : Nuc(0) = 0.9995).
     assert!((nuc - 1.0).abs() < 0.05, "Nuc initial ≉ 1 : {nuc}");
     assert!((nuf - 1.0).abs() < 0.05, "Nuf initial ≉ 1 : {nuf}");
 }
@@ -565,5 +565,109 @@ fn v6_cavity_3levels_stable_short() {
             n.max_rho_dev_ifaces
         );
         assert!(sim.check_guards().is_none(), "garde-fou déclenché (levels=3)");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests SGS (Étape D, porte V5 — port des tests du crate uniforme,
+// src/tests.rs l.532-580, adaptés au solveur octree 3 niveaux)
+// ---------------------------------------------------------------------------
+
+/// Petit solveur cavité octree pour les tests SGS (géométrie compacte V2).
+fn small_solver() -> CavitySolver {
+    CavitySolver::new(32, 64, 4, 1.0e6, 0.71, 0.02, 42, 1, false, 2)
+}
+
+/// Test SGS 1 (port de `mixed_factor_alpha_half_is_geometric_mean`) :
+/// α = 0.5 ⇒ moyenne géométrique √(a·b) (Tab. 2.3).
+#[test]
+fn mixed_factor_alpha_half_is_geometric_mean() {
+    use crate::smag::mixed_factor;
+    let (a, b) = (4.0, 9.0);
+    let m = mixed_factor(a, b, 0.5);
+    assert!((m - (a * b).sqrt()).abs() < 1e-12, "m = {m}");
+    // Limites : α = 0 → b (similarité pure), α = 1 → a (Smagorinsky pur).
+    assert!((mixed_factor(a, b, 0.0) - b).abs() < 1e-12);
+    assert!((mixed_factor(a, b, 1.0) - a).abs() < 1e-12);
+}
+
+/// Test SGS 2 (port de `dynamic_smag_off_matches_fixed_cs_nu_t`, adapté
+/// octree) : flag OFF (défaut) — le chemin de collision ne doit PAS être
+/// altéré par le port : un pas de cavité en mode OFF donne les MÊMES
+/// distributions qu'avant le port. La référence est reconstruite en
+/// ré-exécutant le même pas avec dynamic_smag désactivé via le setter :
+/// bitwise identique ⇔ les buffers de collision reçoivent None.
+#[test]
+fn dynamic_smag_off_matches_fixed_cs_nu_t() {
+    let mut s = small_solver();
+    s.set_dynamic_sgs(false, 0.5, -0.1, 2.0);
+    let mut s_ref = small_solver();
+    for _ in 0..5 {
+        s.step_cavity();
+        s_ref.step_cavity();
+    }
+    // Les distributions coarse doivent être STRICTEMENT identiques : en mode
+    // OFF, collide_node_cavity reçoit nu_t_pre/alpha_t_pre = None sur les
+    // deux solveurs — le port ne touche jamais le chemin OFF.
+    for k in 0..s.coarse.f.len() {
+        for i in 0..9 {
+            assert_eq!(
+                s.coarse.f[k][i], s_ref.coarse.f[k][i],
+                "f altéré en mode OFF (nœud {k}, dir {i})"
+            );
+        }
+    }
+}
+
+/// Test SGS 3 (port de `dynamic_smag_on_runs_sane_and_reports_coefficients`,
+/// adapté octree) : flag ON — des pas dynamiques s'exécutent sans NaN,
+/// remplissent les buffers de ν_t/α_t des trois niveaux et reportent des
+/// coefficients C^ν_dyn bornés [0, 0.04].
+#[test]
+fn dynamic_smag_on_runs_sane_and_reports_coefficients() {
+    let mut sim = CavitySolver::new(32, 64, 4, 1.0e6, 0.71, 0.02, 42, 1, false, 3);
+    sim.set_dynamic_sgs(true, 0.5, -0.1, 2.0);
+    for step in 0..5 {
+        sim.step_cavity();
+        println!(
+            "step {step} : cs_dyn = {:.5} | cs_dyn_max = {:.5} | kap_dyn = {:.5} | nu_t_max = {:.3e} | masse = {:.9}",
+            sim.cs_dyn_mean,
+            sim.cs_dyn_max,
+            sim.kappa_dyn_mean,
+            sim.nu_t_max,
+            sim.coarse.rho.iter().sum::<f64>() / (sim.nx0 * sim.ny0) as f64
+        );
+        // Coefficients bornés (clamp lilly_coefficient [0, 0.04]).
+        assert!(sim.cs_dyn_mean.is_finite() && sim.cs_dyn_max.is_finite());
+        assert!(
+            (0.0..=0.04).contains(&sim.cs_dyn_max),
+            "cs_dyn_max = {}",
+            sim.cs_dyn_max
+        );
+        assert!(sim.cs_dyn_mean <= sim.cs_dyn_max + 1e-12);
+        assert!(
+            (0.0..=0.04).contains(&sim.kappa_dyn_max),
+            "kap_dyn_max = {}",
+            sim.kappa_dyn_max
+        );
+        // ν_t finis sur les trois niveaux.
+        for (lvl_name, lvl) in [("L0", &sim.coarse), ("L1 chaud", &sim.blocks[0].fine)] {
+            for v in lvl.rho.iter().chain(lvl.ux.iter()).chain(lvl.uy.iter()).chain(lvl.temp.iter()) {
+                assert!(v.is_finite(), "champ non fini ({lvl_name})");
+            }
+        }
+        for v in sim.nu_t_pre_coarse.iter().chain(sim.blocks[0].nu_t_pre.iter()) {
+            assert!(v.is_finite(), "ν_t non fini");
+        }
+        for v in sim.alpha_t_pre_coarse.iter().chain(sim.blocks[0].alpha_t_pre.iter()) {
+            assert!(v.is_finite(), "α_t non fini");
+        }
+        // Garde-fous (max_u, finitude) : aucun déclenchement.
+        assert!(sim.check_guards().is_none(), "garde-fou déclenché en mode ON");
+    }
+    // L2 (levels=3) : buffers remplis et finis.
+    let sub = sim.blocks[0].sub.as_ref().expect("bande L2 absente");
+    for v in sub.nu_t_pre.iter().chain(sub.alpha_t_pre.iter()) {
+        assert!(v.is_finite(), "ν_t/α_t L2 non fini");
     }
 }

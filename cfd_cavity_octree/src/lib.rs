@@ -22,6 +22,7 @@ pub mod cavity;
 pub mod grid;
 pub mod interface;
 pub mod lbm;
+pub mod smag;
 pub mod solver;
 
 #[cfg(test)]

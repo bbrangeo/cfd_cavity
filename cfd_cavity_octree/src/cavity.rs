@@ -51,11 +51,21 @@ pub const C_SCALE: f64 = 1.7;
 // ---------------------------------------------------------------------------
 
 /// Collision TRT f + BGK g avec force de Boussinesq Guo sur UN nœud — copie
-/// EXACTE de `collide_node` du crate uniforme (solver.rs l.1054-1185) en mode
-/// sans Smagorinsky : les τ effectifs (τ⁺, τ⁻, τ_t) viennent de `RelaxTimes`
-/// du niveau (τ⁺ = 0.5 + 3·ν_lu LOCAL, §1.3). La force est stockée par nœud
+/// EXACTE de `collide_node` du crate uniforme (solver.rs l.1054-1185). Les τ
+/// effectifs (τ⁺, τ⁻, τ_t) viennent de `RelaxTimes` du niveau (τ⁺ = 0.5 +
+/// 3·ν_lu LOCAL, §1.3) en mode OFF ; la force est stockée par nœud
 /// (`fy_out`) pour la correction de vitesse de `update_macroscopic_guo`
 /// (la F de la correction DOIT être la même que celle de la collision).
+///
+/// `nu_t_pre`/`alpha_t_pre` (mode échelles mixtes dynamiques, Étape D) :
+/// si Some, ν_t/α_t sont pris tels quels (précalculés par
+/// `smag::compute_dynamic_sgs_level`, §2.3.5 thèse) et les τ effectifs sont
+/// recalculés PAR NŒUD — miroir du crate uniforme (solver.rs l.1118-1149) :
+///   τ⁺ = 0.5 + 3·(ν_lu + ν_t), τ⁻ = 0.5 + Λ/(τ⁺−0.5),
+///   τ_t = 0.5 + 3·(α_lu + α_t) (g reste BGK : τ_t⁻ = τ_t⁺) ;
+/// les `RelaxTimes` fixés au niveau ne servent alors que de fallback. Si
+/// None (mode OFF, défaut), les τ du niveau sont utilisés — chemin
+/// historique BITWISE IDENTIQUE (flag OFF jamais touché).
 #[allow(clippy::too_many_arguments)]
 pub fn collide_node_cavity(
     f_node: &mut [f64; 9],
@@ -67,6 +77,8 @@ pub fn collide_node_cavity(
     temp: f64,
     tau: &RelaxTimes,
     beta_eff: f64,
+    nu_t_pre: Option<f64>,
+    alpha_t_pre: Option<f64>,
 ) {
     // Force de Boussinesq (crate uniforme l.1078-1085) : fy = ρ·beta_eff·(T − t_ref),
     // t_ref = 0 (θ normalisé ±0.5), gravité +1 (« positive upward »).
@@ -81,10 +93,22 @@ pub fn collide_node_cavity(
         g_eq[i] = geq(i, temp, ux, uy);
     }
 
-    // Temps de relaxation TRT par niveau (Λ = 3/16 côté f ; BGK côté g).
-    let tau_plus = tau.tau_plus;
-    let tau_minus = tau.tau_minus;
-    let tau_t = tau.tau_t;
+    // Temps de relaxation TRT (Λ = 3/16 côté f ; BGK côté g).
+    // Mode dynamique (Some) : τ effectifs par nœud — miroir du crate uniforme
+    // l.1125-1144. Les RelaxTimes du niveau (fallback) ne servent que si
+    // nu_t/alpha_t sont absents (mode OFF).
+    let (tau_plus, tau_minus, tau_t) = match (nu_t_pre, alpha_t_pre) {
+        (Some(nu_t), Some(alpha_t)) => {
+            let tp = 0.5 + 3.0 * (tau.tau_plus - 0.5) / 3.0
+                + 3.0 * nu_t; // = 0.5 + 3·(ν_lu + ν_t) (ν_lu = (tau.tau_plus−0.5)/3)
+            let tm = 0.5 + crate::lbm::LAMBDA_TRT / (tp - 0.5);
+            let tt = 0.5 + 3.0 * (tau.tau_t - 0.5) / 3.0
+                + 3.0 * alpha_t; // = 0.5 + 3·(α_lu + α_t)
+            (tp, tm, tt)
+        }
+        // Mode OFF : chemin actuel BITWISE IDENTIQUE.
+        _ => (tau.tau_plus, tau.tau_minus, tau.tau_t),
+    };
     // Coefficients TRT : a = (ω+ + ω−)/2, b = (ω+ − ω−)/2 (crate uniforme l.1146-1149).
     let a_f = 0.5 * (1.0 / tau_plus + 1.0 / tau_minus);
     let b_f = 0.5 * (1.0 / tau_plus - 1.0 / tau_minus);
@@ -132,6 +156,11 @@ pub fn collide_node_cavity(
 /// par le streaming, sans relaxation supplémentaire (pratique multi-bloc
 /// standard, Lagrava et al. 2015 ; une double relaxation des fantômes
 /// polluerait le non-équilibre transféré).
+///
+/// `nu_t_pre`/`alpha_t_pre` (mode échelles mixtes dynamiques, Étape D) :
+/// Option<&[f64]> par nœud — None = mode OFF (chemin inchangé, valeurs
+/// factices jamais lées) ; Some = indexation par nœud k (précalculées par
+/// `smag::compute_dynamic_sgs_level`), mêmes patterns rayon/mono.
 /// `jobs > 1` : bandes de lignes rayon, opérations strictement par nœud
 /// (aucune réduction flottante) ⇒ déterministe, bitwise identique à jobs = 1
 /// (même pattern que le crate uniforme, solver.rs l.462-511).
@@ -142,6 +171,8 @@ pub fn collide_cavity(
     fy_out: &mut [f64],
     interior_only: bool,
     jobs: usize,
+    nu_t_pre: Option<&[f64]>,
+    alpha_t_pre: Option<&[f64]>,
 ) {
     let nx = lvl.nx;
     let (ix0, ix1, iy0, iy1) = if interior_only {
@@ -181,6 +212,8 @@ pub fn collide_cavity(
                         temp,
                         tau,
                         beta_eff,
+                        nu_t_pre.map(|v| v[k]),
+                        alpha_t_pre.map(|v| v[k]),
                     );
                 }
             });
@@ -204,6 +237,8 @@ pub fn collide_cavity(
                 temp,
                 tau,
                 beta_eff,
+                nu_t_pre.map(|v| v[k]),
+                alpha_t_pre.map(|v| v[k]),
             );
         }
     }
@@ -626,7 +661,7 @@ pub fn enforce_wall_velocity_block(lvl: &mut LbmLevel, hot_wall: bool, cold_wall
 
 /// Nusselt paroi chaude : moyenne sur iy de |dθ/dx|·L/ΔT, gradient entre les
 /// nœuds ix=1 et ix=2 (DEUXIÈME liaison) — estimateur CALÉ SUR LA RUN DE
-/// RÉFÉRENCE `output/ra1e6_full` : son Nuc(0) = 0.9995 ≈ 1 (état conductif)
+/// RÉFÉRENCE `output/runs_octree/ra1e6_full` : son Nuc(0) = 0.9995 ≈ 1 (état conductif)
 /// prouve l'échelle Lx = nx−1 (largeur), l'échelle Lz donnerait 4.05 et un
 /// Nuc stationnaire 1.3660 < 4.05 serait impossible (Nu paroi ≥ Nu conductif).
 /// Le crate uniforme actuel (post.rs) est passé à Lz APRÈS la run de
