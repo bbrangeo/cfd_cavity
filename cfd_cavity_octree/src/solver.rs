@@ -160,6 +160,8 @@ pub struct NestedBlock {
     pub tau: RelaxTimes,
     /// Facteurs de rescaling L1→L2 (grossier→fin, §1.2 généralisé : facteur
     /// temporel 2^-1 car dt_L2 = dt_L1/2, acoustic scaling).
+    /// Piège §2.3 (dynamic-smag) : recalculés à chaque pas L1 comme `xi`
+    /// (τ effectifs du pas) — valeurs moléculaires au pas 0 et en mode OFF.
     pub xi_down: RescalingFactors,
     /// Force Guo stockée par nœud (correction éq. (16)).
     fy: Vec<f64>,
@@ -192,12 +194,18 @@ pub struct CavitySolver {
     /// τ du niveau L1 (ν_lu = 2·ν_L0, §1.3).
     pub tau_fine: RelaxTimes,
     /// Facteurs de rescaling L0→L1 (§1.2, facteur temporel 1/2).
+    /// Piège §2.3 (dynamic-smag) : recalculés à CHAQUE pas à partir des τ
+    /// EFFECTIFS du pas (moléculaire ramé + ν_t/α_t MOYENS du niveau) —
+    /// valeurs moléculaires au pas 0 et en mode OFF (jamais réécrits).
     pub xi: RescalingFactors,
     /// Nombre de niveaux (2 = config V2, 3 = escalier V6).
     pub levels: usize,
     /// ν et α en unités lattice du niveau grossier (calage crate uniforme).
     pub nu_lu: f64,
     pub alpha_lu: f64,
+    /// Variante ξ_odd exacte (§1.2, (1/2)·τ⁻_fin/τ⁻_grossier) — mémorisée
+    /// pour le recalcul des ξ effectifs à chaque pas (piège §2.3).
+    pub odd_exact: bool,
     /// Étape H : multiplicateur de viscosité initiale (rampe anti-overshoot,
     /// défaut 1.0 = chemin bitwise identique — port crate uniforme).
     pub nu_start_mult: f64,
@@ -433,6 +441,7 @@ impl CavitySolver {
             levels,
             nu_lu: nu,
             alpha_lu: alpha,
+            odd_exact,
             // Étape H : rampe de viscosité (port crate uniforme) — durée 10 %
             // des zones verticales bornée [200, 2000] pas (solver.rs l.194-195).
             nu_start_mult: nu_start_mult.max(1.0),
@@ -625,13 +634,16 @@ impl CavitySolver {
     /// L2 à chaque sous-pas). En mode OFF, les Options restent None et le
     /// chemin de collision est BITWISE IDENTIQUE (aucun calcul SGS).
     ///
-    /// ⚠️ APPROXIMATION DOCUMENTÉE (rescaling interface, itération ultérieure
-    /// §2.3 du plan) : en Étape D on GARDE le rescaling ξ des f^neq avec le
-    /// τ moléculaire FIXÉ AU NIVEAU (precalculé à l'init dans
-    /// `RelaxTimes::from_nu_alpha` et `rescaling_factors*`) — le τ EFFECTIF
-    /// à Ra élevé (τ = 0.5 + 3·(ν + ν_t)) devrait entrer dans les facteurs
-    /// ξ pour être exact à Ra=1e10 ; l'approximation est acceptable ici car
-    /// ν_t/ν ≪ 1 dans les zones d'interface. Itération ultérieure.
+    /// ⚠️ Piège §2.3 du plan (RESOLU, itération précédente documentée) :
+    /// le rescaling ξ des f^neq est recalculé à CHAQUE pas avec les τ
+    /// EFFECTIFS du pas : τ moléculaire ramé (Étape H) + ν_t/α_t MOYENS du
+    /// niveau quand `dynamic_smag` (les buffers nu_t_pre/alpha_t_pre du pas
+    /// courant, précalculés AVANT le couplage A). En mode OFF (ou ν_t = 0),
+    /// `RelaxTimes::from_nu_alpha(nu_eff + 0.0, ...)` est bitwise identique
+    /// au τ précalculé à l'init (même formule, même ordre des opérations).
+    /// Le τ moyen scalaire uniformise ξ par interface (interface.rs hors
+    /// rescaling par nœud) : ν_t/ν atteint ~0.1 à Ra=1e8 et plus au-delà —
+    /// ξ figé aux τ moléculaires serait biaisé d'autant.
     pub fn step_cavity(&mut self) {
         // --- Étape H : τ effectifs avec rampe de viscosité (port crate
         // uniforme `ramp_nu_alpha`) — L0, L1 = 2·ν_eff, L2 = 4·ν_eff. En
@@ -674,6 +686,29 @@ impl CavitySolver {
             self.kappa_dyn_max = ck_max;
             opt_nu_l0 = Some(self.nu_t_pre_coarse.as_slice());
             opt_al_l0 = Some(self.alpha_t_pre_coarse.as_slice());
+
+            // --- Piège §2.3 (dynamic-smag) : ξ A (L0↔L1) EFFECTIF du pas.
+            // τ_effectifs = τ moléculaire ramé (Étape H) + ν_t/α_t MOYENS du
+            // niveau (moyenne arithmétique séquentielle ⇒ déterministe quel
+            // que soit --jobs) : L0 frais du pas, L1 = buffers du pas
+            // précédent (précalcul SGS post-restriction — retard d'1 pas,
+            // négligeable ; nuls au pas 0 ⇒ ξ = ξ moléculaire bitwise).
+            // Ratio des ν 1/2/4 préservé (ν_t en unités locales par niveau :
+            // L1 = 2·ν + ν̄_t,L1, cf. ξ B plus bas). En mode OFF, self.xi
+            // n'est JAMAIS réécrit (chemin bitwise inchangé).
+            let nt0 = mean_field(&self.nu_t_pre_coarse);
+            let at0 = mean_field(&self.alpha_t_pre_coarse);
+            let (mut nt1, mut at1) = (0.0, 0.0);
+            for block in &self.blocks {
+                nt1 += mean_field(&block.nu_t_pre);
+                at1 += mean_field(&block.alpha_t_pre);
+            }
+            let nb = self.blocks.len() as f64;
+            let tau_coarse_eff = RelaxTimes::from_nu_alpha(nu_eff + nt0, alpha_eff + at0);
+            let tau_fine_eff =
+                RelaxTimes::from_nu_alpha(2.0 * nu_eff + nt1 / nb, 2.0 * alpha_eff + at1 / nb);
+            self.xi =
+                rescaling_factors_multilevel(&tau_coarse_eff, &tau_fine_eff, 2, self.odd_exact);
         }
 
         // --- 1. Niveau L0 (force Guo, CL crate uniforme) ---
@@ -724,6 +759,8 @@ impl CavitySolver {
         let (smag_alpha, eta_test, nu_sm_min) =
             (self.smag_alpha, self.eta_test, self.nu_sm_min);
         let dynamic = self.dynamic_smag;
+        // Piège §2.3 : variante ξ_odd exacte mémorisée (recalcul ξ B).
+        let odd_exact_local = self.odd_exact;
         for bi in 0..self.blocks.len() {
             let block = &mut self.blocks[bi];
             let (wl, wr) = (block.hot_wall, block.cold_wall);
@@ -768,6 +805,27 @@ impl CavitySolver {
 
             // --- Bande L2 imbriquée (V6) ---
             if let Some(sub) = &mut block.sub {
+                // Piège §2.3 (dynamic-smag) : ξ B (L1↔L2) EFFECTIF du pas —
+                // τ effectifs = moléculaire ramé (2ν/4ν) + ν_t/α_t MOYENS des
+                // buffers du pas (L1 frais du précalcul ci-dessus, L2 du pas
+                // précédent — retard d'1 pas, négligeable ; nuls au pas 0 ⇒
+                // ξ B = ξ moléculaire bitwise). Mode OFF : jamais réécrit.
+                if dynamic {
+                    let nt1b = mean_field(&block.nu_t_pre);
+                    let at1b = mean_field(&block.alpha_t_pre);
+                    let nt2 = mean_field(&sub.nu_t_pre);
+                    let at2 = mean_field(&sub.alpha_t_pre);
+                    let tau_l1_eff =
+                        RelaxTimes::from_nu_alpha(2.0 * nu_eff + nt1b, 2.0 * alpha_eff + at1b);
+                    let tau_l2_eff =
+                        RelaxTimes::from_nu_alpha(4.0 * nu_eff + nt2, 4.0 * alpha_eff + at2);
+                    sub.xi_down = rescaling_factors_multilevel(
+                        &tau_l1_eff,
+                        &tau_l2_eff,
+                        2,
+                        odd_exact_local,
+                    );
+                }
                 // Couplage B frais L1→L2 : injection des fantômes L2 depuis
                 // l'état L1 post-sous-pas 1 (Lagrava, injection fraîche).
                 let xi_down = sub.xi_down;
@@ -1108,6 +1166,15 @@ impl CavitySolver {
         self.time_step = 0;
         Ok(())
     }
+}
+
+/// Moyenne arithmétique séquentielle d'un champ scalaire (représentant
+/// scalaire des buffers ν_t/α_t pour les ξ effectifs du piège §2.3).
+/// Somme gauche→droite ⇒ déterministe quel que soit --jobs (le champ est
+/// déjà construit) ; ξ reste uniforme par interface (interface.rs n'a pas
+/// de rescaling par nœud — extension itérative).
+fn mean_field(v: &[f64]) -> f64 {
+    v.iter().sum::<f64>() / v.len() as f64
 }
 
 /// Recalcule ρ, u, T d'un sous-ensemble de nœuds depuis les distributions

@@ -672,6 +672,113 @@ fn dynamic_smag_on_runs_sane_and_reports_coefficients() {
     }
 }
 
+/// Test §2.3 (piège de cohérence physique du rescaling, dynamic-smag) :
+/// 1. au pas 0 (buffers ν_t/α_t nuls), les ξ = ξ moléculaires BITWISE
+///    (from_nu_alpha(ν + 0.0, ...) ≡ from_nu_alpha(ν, ...) — même formule,
+///    même ordre des opérations) ;
+/// 2. avec dynamic-smag ON et un ν_t non nul, les ξ recalculés à chaque pas
+///    à partir des τ_eff (moléculaire ramé + ν_t/α_t MOYENS) DIFFÈRENT des
+///    ξ moléculaires (le ratio des τ suit ν_t/ν ≈ 0.1 à Ra élevé) ;
+/// 3. en mode OFF (ν_t ≡ 0), les ξ restent bitwise identiques au calcul
+///    initial après N pas (chemin inchangé) ;
+/// 4. déterminisme : deux runs dynamic-smag même seed ⇒ ξ bitwise identiques.
+#[test]
+fn dynamic_smag_xi_recomputed_from_effective_taus() {
+    // --- Référence moléculaire (τ figés à l'init, ancien comportement). ---
+    let mol_xi = |ra: f64| {
+        let utarget = 0.02;
+        let pr: f64 = 0.71;
+        let lz = (64 - 1) as f64;
+        let nu: f64 = (utarget * pr.sqrt() * lz / (1.7 * ra.sqrt())).powf(2.0 / 3.0);
+        let alpha = nu / pr;
+        let tau_c = RelaxTimes::from_nu_alpha(nu, alpha);
+        let tau_f = RelaxTimes::from_nu_alpha(2.0 * nu, 2.0 * alpha);
+        let tau_s = RelaxTimes::from_nu_alpha(4.0 * nu, 4.0 * alpha);
+        (
+            crate::interface::rescaling_factors_multilevel(&tau_c, &tau_f, 2, false),
+            crate::interface::rescaling_factors_multilevel(&tau_f, &tau_s, 2, false),
+        )
+    };
+    let (xi_mol, xi_sub_mol) = mol_xi(1.0e6);
+
+    // --- 1. Pas 0 : ξ = ξ moléculaires bitwise (buffers nuls, formule
+    //    from_nu_alpha(ν + 0.0) ≡ from_nu_alpha(ν)). ---
+    let sim0 = CavitySolver::new(32, 64, 4, 1.0e6, 0.71, 0.02, 42, 1, false, 2, 1.0, None);
+    assert_eq!(sim0.xi, xi_mol, "ξ au pas 0 ≠ ξ moléculaire (bitwise)");
+    assert_eq!(
+        sim0.xi.xi_even, xi_mol.xi_even,
+        "ξ_even au pas 0 ≠ moléculaire"
+    );
+    assert_eq!(
+        sim0.xi.xi_thermal, xi_mol.xi_thermal,
+        "ξ_thermal au pas 0 ≠ moléculaire"
+    );
+
+    // --- 2. Dynamic-smag ON + ν_t non nul : ξ recalculés ≠ ξ moléculaires.
+    //    (Ra=1e6, ν ≈ 0.0073 : ν_t borné par le plancher nu_sm_min·ν < 0 et
+    //    le module κsm — le τ_eff moyen diffère du τ moléculaire.) ---
+    let mut sim = CavitySolver::new(32, 64, 4, 1.0e6, 0.71, 0.02, 42, 1, false, 3, 1.0, None);
+    sim.set_dynamic_sgs(true, 0.5, -0.1, 2.0);
+    for _ in 0..5 {
+        sim.step_cavity();
+    }
+    // ν_t non nul quelque part (plancher + module ⇒ ≠ 0 dès le 1ᵉʳ pas).
+    assert!(
+        sim.nu_t_max > 0.0,
+        "ν_t nul : le test ne couvre pas le chemin dynamic"
+    );
+    let xi_dyn = sim.xi;
+    assert_ne!(
+        xi_dyn.xi_even, xi_mol.xi_even,
+        "ξ_even dynamic-smag = ξ moléculaire : ξ ne suit PAS les τ_eff"
+    );
+    assert_ne!(
+        xi_dyn.xi_thermal, xi_mol.xi_thermal,
+        "ξ_thermal dynamic-smag = ξ moléculaire"
+    );
+    // Le ξ reste proche du moléculaire (ν_t/ν ≪ 1 : déviation faible) et
+    // strictement positif (division 1/ξ du couplage fin→grossier).
+    assert!(xi_dyn.xi_even > 0.0);
+    let dev = (xi_dyn.xi_even - xi_mol.xi_even).abs() / xi_mol.xi_even;
+    println!("§2.3 : ξ_even mol = {:.6} | dynamic = {:.6} | déviation = {dev:.3e}", xi_mol.xi_even, xi_dyn.xi_even);
+    assert!(dev < 0.1, "ξ_even dévié de {dev} : ν_t moyen hors plage attendue");
+    // ξ B (L1↔L2) également recalculé (levels=3, bande L2).
+    let sub = sim.blocks[0].sub.as_ref().expect("bande L2 absente");
+    assert_ne!(
+        sub.xi_down.xi_even, xi_sub_mol.xi_even,
+        "ξ_B dynamic-smag = ξ_B moléculaire : ξ_B ne suit PAS les τ_eff"
+    );
+
+    // --- 3. Mode OFF (ν_t ≡ 0) : ξ bitwise identiques au calcul initial
+    //    après N pas (le chemin OFF n'est JAMAIS réécrit). ---
+    let mut sim_off = CavitySolver::new(32, 64, 4, 1.0e6, 0.71, 0.02, 42, 1, false, 3, 1.0, None);
+    for _ in 0..5 {
+        sim_off.step_cavity();
+    }
+    assert_eq!(sim_off.xi, xi_mol, "ξ réécrit en mode OFF (ν_t = 0)");
+    let sub_off = sim_off.blocks[0].sub.as_ref().expect("bande L2 absente");
+    assert_eq!(
+        sub_off.xi_down, xi_sub_mol,
+        "ξ_B réécrit en mode OFF (ν_t = 0)"
+    );
+
+    // --- 4. Déterminisme : deux runs dynamic-smag même seed ⇒ ξ bitwise
+    //    identiques (moyennes séquentielles, aucune réduction flottante
+    //    parallèle). ---
+    let mut sim_bis = CavitySolver::new(32, 64, 4, 1.0e6, 0.71, 0.02, 42, 1, false, 3, 1.0, None);
+    sim_bis.set_dynamic_sgs(true, 0.5, -0.1, 2.0);
+    for _ in 0..5 {
+        sim_bis.step_cavity();
+    }
+    assert_eq!(sim_bis.xi, xi_dyn, "ξ non déterministe (même seed)");
+    let sub_bis = sim_bis.blocks[0].sub.as_ref().expect("bande L2 absente");
+    let sub_dyn = sim.blocks[0].sub.as_ref().unwrap();
+    assert_eq!(
+        sub_bis.xi_down, sub_dyn.xi_down,
+        "ξ_B non déterministe (même seed)"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Tests snapshots (Étape G — port des tests du crate uniforme, adaptés au
 // solveur octree multi-niveaux)
