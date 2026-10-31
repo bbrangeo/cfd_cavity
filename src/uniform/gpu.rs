@@ -1,21 +1,33 @@
-//! Backend GPU wgpu (Étape A, porte G1) — pas de temps uniforme en f32.
+//! Backend GPU wgpu (Étapes A-C, portes G1-G3) — pas de temps uniforme en f32.
 //!
-//! Architecture 3 dispatches ordonnés (un seul compute pass, trois
+//! Architecture 2 dispatches ordonnés (un seul compute pass, deux
 //! `dispatch_workgroups` — chaque dispatch est un usage-scope wgpu, les
 //! barrières storage sont insérées entre dispatches, aucune race) :
 //!
-//!   1. `collide`     : collision TRT (Λ = 3/16) + force de Guo (odd/even) +
-//!                      Smagorinsky par nœud (ν_t, τ+, τ_t+ dépendent de ν_t)
-//!                      → écrit f_col/g_col + fy + nu_t.
-//!   2. `stream`      : streaming pull + bounce-back (lit f_col/g_col FIGÉS
-//!                      du dispatch 1 — c'est la même sémantique que le CPU,
-//!                      qui clone f/g avant le streaming) → écrit f_out/g_out.
-//!   3. `macroscopic` : CL thermiques (verticales isothermes puis
-//!                      horizontales zero-gradient, les coins écrasées par la
-//!                      copie horizontale — ordre CPU) PUIS macroscopique
-//!                      (ρ, u, T) avec correction de vitesse Guo éq. (16)
-//!                      lue depuis fy (même F que la collision), no-slip
-//!                      périmètre → écrit stock.
+//!   1. `collide`      : collision TRT (Λ = 3/16) + force de Guo (odd/even) +
+//!                       Smagorinsky par nœud (ν_t, τ+, τ_t+ dépendent de ν_t)
+//!                       → écrit f_col/g_col + nu_t.
+//!   2. `stream_macro` : streaming pull + bounce-back (lit f_col/g_col FIGÉS
+//!                       du dispatch 1 — c'est la même sémantique que le CPU,
+//!                       qui clone f/g avant le streaming) → écrit f_out/g_out,
+//!                       PUIS CL thermiques (verticales isothermes puis
+//!                       horizontales zero-gradient, les coins écrasées par la
+//!                       copie horizontale — ordre CPU ; la valeur du nœud
+//!                       intérieur est recalculée depuis g_col figé, aucune
+//!                       course) PUIS macroscopique (ρ, u, T) avec correction
+//!                       de vitesse Guo éq. (16) — fy recalculé localement
+//!                       depuis le stock du temps t (même F que la collision)
+//!                       — no-slip périmètre → écrit stock.
+//!
+//! Étape C (porte G3) : les boucles 9 directions sont déroulées (indices
+//! littéraux — plus de tableaux privés indexés dynamiquement qui forçaient la
+//! scalarisation/spills sur Metal) et le pas s'exécute en 2 dispatches.
+//! Le layout mémoire est SoA [direction][nœud] (f_in[i·n + k]) : les accès
+//! des 9 directions sont coalescés entre threads adjacents (l'AoS [nœud][9]
+//! rendait le streaming non coalescé, ~3,5× d'amplification de trafic).
+//! De plus, hors spin-up (params constants bit-à-bit), les pas s'enchaînent
+//! dans un SEUL command encoder (batch de 64 pas, flushé avant tout readback)
+//! pour amortir l'overhead CPU de soumission.
 //!
 //! Précision (parade FluidX3D, plan §2) : les populations f sont stockées
 //! DÉCALÉES — f_i − w_i·ρ₀ (ρ₀ = 1) — pour récupérer la précision relative
@@ -37,7 +49,7 @@ use crate::uniform::solver::{T_COLD, T_HOT};
 /// Paramètres uniformes du pas de temps (passés au shader via uniform buffer).
 /// Convertis en f32 à l'interface CPU (WGSL n'a pas de f64 portable).
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
+#[derive(Clone, Copy, Pod, Zeroable, PartialEq)]
 struct GpuParams {
     /// τ moléculaire pour |S| : 0.5 + 3·max(ν_eff, 0.002/3) (rampe incluse).
     tau_mol: f32,
@@ -74,27 +86,33 @@ pub struct GpuSolver {
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipe_collide: wgpu::ComputePipeline,
-    pipe_stream: wgpu::ComputePipeline,
-    pipe_macro: wgpu::ComputePipeline,
+    pipe_stream_macro: wgpu::ComputePipeline,
     params_buf: wgpu::Buffer,
 
-    /// Populations f DÉCALÉES f_i − w_i·ρ₀ (f32), layout [nœud][9] — buffer A.
+    /// Populations f DÉCALÉES f_i − w_i·ρ₀ (f32), layout SoA [direction][nœud]
+    /// (f[i·n + k]) — buffer A.
+    /// Populations f DÉCALÉES f_i − w_i·ρ₀ (f32), layout SoA [direction][nœud]
+    /// (f[i·n + k]) — buffer A. Les champs struct sont lus via les bind
+    /// groups pré-créés (pas d'accès direct Rust hors from_solver/tests).
+    #[allow(dead_code)] // lu par les bind groups (GPU), pas par le code Rust
     f_a: wgpu::Buffer,
-    /// Populations g (f32), layout [nœud][9] — buffer A.
+    /// Populations g (f32), layout SoA [direction][nœud] — buffer A.
+    #[allow(dead_code)]
     g_a: wgpu::Buffer,
-    /// Idem buffer B (ping-pong : le pas pair lit A/écrit B, inverse ensuite).
+    /// Idem buffer B, layout SoA [direction][nœud] (ping-pong : le pas pair
+    /// lit A/écrit B, inverse ensuite).
+    #[allow(dead_code)]
     f_b: wgpu::Buffer,
+    #[allow(dead_code)]
     g_b: wgpu::Buffer,
     /// Scratch post-collision (réécrit à chaque pas par le dispatch collide).
+    #[allow(dead_code)]
     f_col: wgpu::Buffer,
+    #[allow(dead_code)]
     g_col: wgpu::Buffer,
-    /// Force de flottabilité par nœud (dernière collision, champs du temps t)
-    /// — réutilisée par le dispatch macroscopic (Guo éq. (16)), même sémantique
-    /// que `fy_node` du CPU.
-    fy_buf: wgpu::Buffer,
     /// Viscosité turbulente par nœud (diagnostic + TimeAverager).
     nu_t_buf: wgpu::Buffer,
-    /// Champs macroscopiques stock (ρ, ux, uy, T) — temps t+1 après dispatch 3.
+    /// Champs macroscopiques stock (ρ, ux, uy, T) — temps t+1 après dispatch 2.
     stock_buf: wgpu::Buffer,
     /// Staging MAP_READ (stock 4n + nu_t n f32) pour les lectures CPU.
     read_buf: wgpu::Buffer,
@@ -102,10 +120,8 @@ pub struct GpuSolver {
     /// Bind groups pré-créés (buffers fixes) — variantes ping-pong A/B.
     bg_collide_a: wgpu::BindGroup,
     bg_collide_b: wgpu::BindGroup,
-    bg_stream_a: wgpu::BindGroup,
-    bg_stream_b: wgpu::BindGroup,
-    bg_macro_a: wgpu::BindGroup,
-    bg_macro_b: wgpu::BindGroup,
+    bg_stream_macro_a: wgpu::BindGroup,
+    bg_stream_macro_b: wgpu::BindGroup,
 
     nx: usize,
     ny: usize,
@@ -113,14 +129,26 @@ pub struct GpuSolver {
     time_step: usize,
     /// true = le pas suivant lit A et écrit B (ping-pong).
     even: bool,
+    /// Encoder batché : hors spin-up (params constants bit-à-bit), les pas
+    /// s'enchaînent dans un SEUL command encoder (Étape C, amortit l'overhead
+    /// CPU de soumission) — flushé avant tout readback et tous BATCH_STEPS.
+    batch_enc: Option<wgpu::CommandEncoder>,
+    /// Nombre de pas en attente dans l'encoder batché.
+    batch_len: usize,
+    /// Params du dernier pas du batch (re-vérifiés à chaque pas : le batching
+    /// n'est valable que si params reste identique bit-à-bit).
+    batch_params: GpuParams,
     /// Info adaptateur (affichée au démarrage).
     adapter_info: String,
 }
 
+/// Taille du batch de pas (encoder unique) : amortit l'overhead CPU de
+/// création/soumission d'encoder — flushé avant tout readback.
+const BATCH_STEPS: usize = 64;
 const WGSL: &str = r#"
 // Paramètres uniformes (uniform buffer, f32).
 struct Params {
-    tau_mol: f32,     // 0.5 + 3·max(ν_eff, 0.002/3) — pour |S| (Smagorinsky)
+    tau_mol: f32,     // 0.5 + 3·ν_eff — pour |S| (Smagorinsky)
     nu_eff: f32,      // ν rampe (non planché) — τ+ = 0.5 + 3(ν_eff + ν_t)
     alpha_eff: f32,   // α rampe — τ_t+ = 0.5 + 3(α_eff + α_t)
     beta_eff: f32,    // flottabilité effective (rampe spin-up incluse)
@@ -136,6 +164,12 @@ struct Params {
     pad: u32,
 };
 
+// Layout mémoire SoA [direction][nœud] (Étape C, porte G3) : f[i·n + k] avec
+// n = nx·ny. Les 9 accès d'un kernel sont coalescés entre threads adjacents
+// (l'AoS [nœud][9] rendait le streaming non coalescé, ~3,5× d'amplification
+// de trafic — plafond ~175 MLUPS sur 256×1024). stock reste [nœud][4] (les 4
+// composantes d'un nœud sont lues ensemble).
+
 @group(0) @binding(0) var<uniform> P: Params;
 @group(0) @binding(1) var<storage, read> f_in: array<f32>;
 @group(0) @binding(2) var<storage, read> g_in: array<f32>;
@@ -144,29 +178,66 @@ struct Params {
 @group(0) @binding(5) var<storage, read_write> stock: array<f32>;
 @group(0) @binding(6) var<storage, read_write> f_col: array<f32>;
 @group(0) @binding(7) var<storage, read_write> g_col: array<f32>;
-@group(0) @binding(8) var<storage, read_write> fy: array<f32>;
 @group(0) @binding(9) var<storage, read_write> nu_t: array<f32>;
 
 // D2Q9 : ordre rest, E, N, W, S, NE, NW, SW, SE (crate oxiphysics-lbm).
-var<private> CX: array<i32, 9> = array<i32, 9>(0, 1, 0, -1, 0, 1, -1, -1, 1);
-var<private> CY: array<i32, 9> = array<i32, 9>(0, 0, 1, 0, -1, 1, 1, -1, -1);
-var<private> W: array<f32, 9> = array<f32, 9>(
-    4.0 / 9.0, 1.0 / 9.0, 1.0 / 9.0, 1.0 / 9.0, 1.0 / 9.0,
-    1.0 / 36.0, 1.0 / 36.0, 1.0 / 36.0, 1.0 / 36.0
-);
-var<private> OPP: array<u32, 9> = array<u32, 9>(0u, 3u, 4u, 1u, 2u, 7u, 8u, 5u, 6u);
+// Étape C (porte G3) : boucles 9 directions DÉROULÉES — plus aucun tableau
+// privé indexé dynamiquement (CX/CY/W/OPP supprimés). L'indexation dynamique
+// de tableaux privés force la scalarisation en mémoire + spills registres sur
+// Metal. Tous les indices sont des littéraux ; les poids et vecteurs sont des
+// constantes (même ordre d'accumulation que les boucles).
+const W0: f32 = 4.0 / 9.0;
+const W1: f32 = 1.0 / 9.0; // E, N, W, S
+const W5: f32 = 1.0 / 36.0; // NE, NW, SW, SE
+const CS2: f32 = 1.0 / 3.0;
+
+// Nombre total de nœuds (stride SoA des directions).
+fn n_tot() -> u32 {
+    return P.nx * P.ny;
+}
 
 // Équilibre hydrodynamique feq (crate : w·ρ·[1 + eu/cs² + eu²/(2cs⁴) − u²/(2cs²)]).
-fn feq(i: u32, rho: f32, ux: f32, uy: f32) -> f32 {
-    let eu = f32(CX[i]) * ux + f32(CY[i]) * uy;
+fn feq_c(w: f32, cx: f32, cy: f32, rho: f32, ux: f32, uy: f32) -> f32 {
+    let eu = cx * ux + cy * uy;
     let u2 = ux * ux + uy * uy;
-    return W[i] * rho * (1.0 + eu / P.cs2 + eu * eu / (2.0 * P.cs2 * P.cs2) - u2 / (2.0 * P.cs2));
+    return w * rho * (1.0 + eu / CS2 + eu * eu / (2.0 * CS2 * CS2) - u2 / (2.0 * CS2));
 }
 
 // Équilibre thermique geq (crate : w·T·[1 + eu/cs²]).
-fn geq(i: u32, t: f32, ux: f32, uy: f32) -> f32 {
-    let eu = f32(CX[i]) * ux + f32(CY[i]) * uy;
-    return W[i] * t * (1.0 + eu / P.cs2);
+fn geq_c(w: f32, cx: f32, cy: f32, t: f32, ux: f32, uy: f32) -> f32 {
+    let eu = cx * ux + cy * uy;
+    return w * t * (1.0 + eu / CS2);
+}
+
+// Équilibre thermique de paroi isotherme (u = 0) : g_i = w_i·T — les poids
+// seuls suffisent (eu = 0). Indices littéraux, stride SoA (a = 9·n + k).
+fn wall_iso(t: f32, a: u32) {
+    g_out[a + 0u * P.nx * P.ny] = W0 * t;
+    g_out[a + 1u * P.nx * P.ny] = W1 * t;
+    g_out[a + 2u * P.nx * P.ny] = W1 * t;
+    g_out[a + 3u * P.nx * P.ny] = W1 * t;
+    g_out[a + 4u * P.nx * P.ny] = W1 * t;
+    g_out[a + 5u * P.nx * P.ny] = W5 * t;
+    g_out[a + 6u * P.nx * P.ny] = W5 * t;
+    g_out[a + 7u * P.nx * P.ny] = W5 * t;
+    g_out[a + 8u * P.nx * P.ny] = W5 * t;
+}
+
+// Collision TRT d'une direction avec force de Guo (Guo, Shi & Zheng 2002),
+// F = (0, fy, 0) : partie impaire (momentum, facteur 1 − 1/(2τ−)) et partie
+// paire (stress, facteur 1 − 1/(2τ+)). Réplique exacte, direction par
+// direction, de la boucle de collision de `collide_node` (solver.rs) :
+//   S_i = w_i·[(e_i−u)/cs² + (e_i·u)·e_i/cs⁴]·F
+//   f_new = (w_i + f_in) − a_f·d_i − b_f·d_opp + (1−1/(2τ−))·S⁻ + (1−1/(2τ+))·S⁺
+fn trt_f(w: f32, cx: f32, cy: f32, fin: f32, d: f32, d_opp: f32, ux: f32, uy: f32,
+         fy_node: f32, a_f: f32, b_f: f32, tau_minus: f32, tau_plus: f32) -> f32 {
+    let ei_u = cx * ux + cy * uy;
+    let s_i = w * ((cy - uy) / CS2 + ei_u * cy / (CS2 * CS2)) * fy_node;
+    let s_minus = w * (cy / CS2) * fy_node;
+    let s_plus = s_i - s_minus;
+    return (w + fin) - a_f * d - b_f * d_opp
+        + (1.0 - 0.5 / tau_minus) * s_minus
+        + (1.0 - 0.5 / tau_plus) * s_plus;
 }
 
 // ---------------------------------------------------------------------------
@@ -181,8 +252,9 @@ fn collide(@builtin(global_invocation_id) gid: vec3<u32>) {
     let iy = gid.y;
     if (ix >= P.nx || iy >= P.ny) { return; }
     let k = iy * P.nx + ix;
+    let n = n_tot();
 
-    // Champs macroscopiques du temps t (stock, écrits par le dispatch 3 du
+    // Champs macroscopiques du temps t (stock, écrits par le dispatch 2 du
     // pas précédent — y compris la correction de vitesse Guo et le no-slip).
     let rho = stock[4u * k + 0u];
     let ux = stock[4u * k + 1u];
@@ -190,28 +262,71 @@ fn collide(@builtin(global_invocation_id) gid: vec3<u32>) {
     let temp = stock[4u * k + 3u];
 
     // Force de Boussinesq : fy = ρ·β_eff·(T − t_ref), évaluée aux champs du
-    // temps t et stockée par nœud — la correction de vitesse du dispatch 3
-    // (Guo éq. (16)) doit réutiliser EXACTEMENT cette F (sémantique CPU).
+    // temps t — utilisée par la collision de CE pas. Le dispatch 2
+    // (correction de vitesse Guo éq. (16)) la recalcule localement depuis
+    // stock (même expression, même F — sémantique CPU) ; le buffer fy global
+    // est supprimé (Étape C).
     let fy_node = rho * P.beta_eff * (temp - P.t_ref);
-    fy[k] = fy_node;
 
-    // Équilibres + moments non-équilibrés π_neq (avant relaxation) pour |S|.
-    // f_i reconstruit depuis le stockage décalé : f_i = w_i + décalage.
-    var f_eq: array<f32, 9>;
-    var g_eq: array<f32, 9>;
-    var pi_xx = 0.0;
-    var pi_xy = 0.0;
-    var pi_yy = 0.0;
-    for (var i = 0u; i < 9u; i = i + 1u) {
-        f_eq[i] = feq(i, rho, ux, uy);
-        g_eq[i] = geq(i, temp, ux, uy);
-        let fneq = W[i] + f_in[9u * k + i] - f_eq[i];
-        let cx = f32(CX[i]);
-        let cy = f32(CY[i]);
-        pi_xx = pi_xx + fneq * cx * cx;
-        pi_xy = pi_xy + fneq * cx * cy;
-        pi_yy = pi_yy + fneq * cy * cy;
-    }
+    // Populations d'entrée (reconstruction depuis le stockage décalé :
+    // f_i = w_i + décalage) — stride SoA : direction i à f_in[i·n + k].
+    let f0 = W0 + f_in[0u * n + k];
+    let f1 = W1 + f_in[1u * n + k];
+    let f2 = W1 + f_in[2u * n + k];
+    let f3 = W1 + f_in[3u * n + k];
+    let f4 = W1 + f_in[4u * n + k];
+    let f5 = W5 + f_in[5u * n + k];
+    let f6 = W5 + f_in[6u * n + k];
+    let f7 = W5 + f_in[7u * n + k];
+    let f8 = W5 + f_in[8u * n + k];
+    let g0 = g_in[0u * n + k];
+    let g1 = g_in[1u * n + k];
+    let g2 = g_in[2u * n + k];
+    let g3 = g_in[3u * n + k];
+    let g4 = g_in[4u * n + k];
+    let g5 = g_in[5u * n + k];
+    let g6 = g_in[6u * n + k];
+    let g7 = g_in[7u * n + k];
+    let g8 = g_in[8u * n + k];
+
+    // Équilibres (direction par direction — mêmes expressions que la boucle).
+    let u2 = ux * ux + uy * uy;
+    let c1 = 1.0 - u2 / (2.0 * CS2);
+    let f_eq0 = feq_c(W0, 0.0, 0.0, rho, ux, uy);
+    let f_eq1 = feq_c(W1, 1.0, 0.0, rho, ux, uy);
+    let f_eq2 = feq_c(W1, 0.0, 1.0, rho, ux, uy);
+    let f_eq3 = feq_c(W1, -1.0, 0.0, rho, ux, uy);
+    let f_eq4 = feq_c(W1, 0.0, -1.0, rho, ux, uy);
+    let f_eq5 = feq_c(W5, 1.0, 1.0, rho, ux, uy);
+    let f_eq6 = feq_c(W5, -1.0, 1.0, rho, ux, uy);
+    let f_eq7 = feq_c(W5, -1.0, -1.0, rho, ux, uy);
+    let f_eq8 = feq_c(W5, 1.0, -1.0, rho, ux, uy);
+    let g_eq0 = geq_c(W0, 0.0, 0.0, temp, ux, uy);
+    let g_eq1 = geq_c(W1, 1.0, 0.0, temp, ux, uy);
+    let g_eq2 = geq_c(W1, 0.0, 1.0, temp, ux, uy);
+    let g_eq3 = geq_c(W1, -1.0, 0.0, temp, ux, uy);
+    let g_eq4 = geq_c(W1, 0.0, -1.0, temp, ux, uy);
+    let g_eq5 = geq_c(W5, 1.0, 1.0, temp, ux, uy);
+    let g_eq6 = geq_c(W5, -1.0, 1.0, temp, ux, uy);
+    let g_eq7 = geq_c(W5, -1.0, -1.0, temp, ux, uy);
+    let g_eq8 = geq_c(W5, 1.0, -1.0, temp, ux, uy);
+
+    // Moments non-équilibrés π_neq (avant relaxation) pour |S| — mêmes
+    // contributions et ordre que la boucle (i = 0..9 ; les directions
+    // cardinales ont cx²=1 ou cy²=1, les 4 diagonales cx²=cy²=1 ; cx·cy est
+    // nul sur les cardinales, ±1 sur les diagonales).
+    let d0 = f0 - f_eq0;
+    let d1 = f1 - f_eq1;
+    let d2 = f2 - f_eq2;
+    let d3 = f3 - f_eq3;
+    let d4 = f4 - f_eq4;
+    let d5 = f5 - f_eq5;
+    let d6 = f6 - f_eq6;
+    let d7 = f7 - f_eq7;
+    let d8 = f8 - f_eq8;
+    let pi_xx = d1 + d3 + d5 + d6 + d7 + d8;
+    let pi_xy = d5 - d6 + d7 - d8;
+    let pi_yy = d2 + d4 + d5 + d6 + d7 + d8;
     // |S| = sqrt(π:π) / (2·cs²·τ_mol·ρ) ; π:π = Πxx² + 2Πxy² + Πyy²
     // (même convention que le CPU : |S|_canonique/√2).
     let pi2 = pi_xx * pi_xx + 2.0 * pi_xy * pi_xy + pi_yy * pi_yy;
@@ -232,134 +347,252 @@ fn collide(@builtin(global_invocation_id) gid: vec3<u32>) {
     let b_f = 0.5 * (1.0 / tau_plus - 1.0 / tau_minus);
     let a_g = 1.0 / tau_t_plus; // τ_t− = τ_t+ ⇒ b_g = 0
 
-    // Déviations pré-collision (Σ f' = Σ f : masse conservée).
-    var d_f: array<f32, 9>;
-    var d_g: array<f32, 9>;
-    for (var i = 0u; i < 9u; i = i + 1u) {
-        d_f[i] = W[i] + f_in[9u * k + i] - f_eq[i];
-        d_g[i] = g_in[9u * k + i] - g_eq[i];
-    }
+    // Collision TRT avec force (Guo) — paires opposées explicites
+    // (opp(0)=0, opp(1)=3, opp(2)=4, opp(5)=7, opp(6)=8). Deviations
+    // d_i/d_opp identiques à la boucle (Σ f' = Σ f : masse conservée).
+    f_col[0u * n + k] = trt_f(W0, 0.0, 0.0, f_in[0u * n + k], d0, d0, ux, uy,
+                              fy_node, a_f, b_f, tau_minus, tau_plus) - W0;
+    f_col[3u * n + k] = trt_f(W1, -1.0, 0.0, f_in[3u * n + k], d3, d1, ux, uy,
+                              fy_node, a_f, b_f, tau_minus, tau_plus) - W1;
+    f_col[1u * n + k] = trt_f(W1, 1.0, 0.0, f_in[1u * n + k], d1, d3, ux, uy,
+                              fy_node, a_f, b_f, tau_minus, tau_plus) - W1;
+    f_col[4u * n + k] = trt_f(W1, 0.0, -1.0, f_in[4u * n + k], d4, d2, ux, uy,
+                              fy_node, a_f, b_f, tau_minus, tau_plus) - W1;
+    f_col[2u * n + k] = trt_f(W1, 0.0, 1.0, f_in[2u * n + k], d2, d4, ux, uy,
+                              fy_node, a_f, b_f, tau_minus, tau_plus) - W1;
+    f_col[7u * n + k] = trt_f(W5, -1.0, -1.0, f_in[7u * n + k], d7, d5, ux, uy,
+                              fy_node, a_f, b_f, tau_minus, tau_plus) - W5;
+    f_col[5u * n + k] = trt_f(W5, 1.0, 1.0, f_in[5u * n + k], d5, d7, ux, uy,
+                              fy_node, a_f, b_f, tau_minus, tau_plus) - W5;
+    f_col[8u * n + k] = trt_f(W5, 1.0, -1.0, f_in[8u * n + k], d8, d6, ux, uy,
+                              fy_node, a_f, b_f, tau_minus, tau_plus) - W5;
+    f_col[6u * n + k] = trt_f(W5, -1.0, 1.0, f_in[6u * n + k], d6, d8, ux, uy,
+                              fy_node, a_f, b_f, tau_minus, tau_plus) - W5;
 
-    // Collision f TRT avec force (Guo, Shi & Zheng 2002) :
-    //   S_i = w_i·[(e_i−u)/cs² + (e_i·u)·e_i/cs⁴]·F, F = (0, fy, 0) ;
-    // partie impaire (momentum) : facteur (1 − 1/(2τ−)) ;
-    // partie paire (stress) : facteur (1 − 1/(2τ+)).
-    for (var i = 0u; i < 9u; i = i + 1u) {
-        let cx = f32(CX[i]);
-        let cy = f32(CY[i]);
-        let opp = OPP[i];
-        let ei_u = cx * ux + cy * uy;
-        let s_i = W[i] * ((cy - uy) / P.cs2 + ei_u * cy / (P.cs2 * P.cs2)) * fy_node;
-        let s_minus = W[i] * (cy / P.cs2) * fy_node;
-        let s_plus = s_i - s_minus;
-        let f_new = (W[i] + f_in[9u * k + i]) - a_f * d_f[i] - b_f * d_f[opp]
-            + (1.0 - 0.5 / tau_minus) * s_minus
-            + (1.0 - 0.5 / tau_plus) * s_plus;
-        f_col[9u * k + i] = f_new - W[i]; // re-décale à l'écriture
-        g_col[9u * k + i] = g_in[9u * k + i] - a_g * d_g[i];
-    }
+    // Collision scalaire BGK (τ_t− = τ_t+ ⇒ b_g = 0).
+    g_col[0u * n + k] = g0 - a_g * (g0 - g_eq0);
+    g_col[1u * n + k] = g1 - a_g * (g1 - g_eq1);
+    g_col[2u * n + k] = g2 - a_g * (g2 - g_eq2);
+    g_col[3u * n + k] = g3 - a_g * (g3 - g_eq3);
+    g_col[4u * n + k] = g4 - a_g * (g4 - g_eq4);
+    g_col[5u * n + k] = g5 - a_g * (g5 - g_eq5);
+    g_col[6u * n + k] = g6 - a_g * (g6 - g_eq6);
+    g_col[7u * n + k] = g7 - a_g * (g7 - g_eq7);
+    g_col[8u * n + k] = g8 - a_g * (g8 - g_eq8);
 }
 
 // ---------------------------------------------------------------------------
-// Dispatch 2 — streaming pull + bounce-back. Lit f_col/g_col FIGÉS du
-// dispatch 1 (même sémantique que le CPU, qui clone f/g avant streaming) :
-// f[i](x) ← f_col(x − c_i), sinon bounce-back f_col(x, opp(i)).
+// Dispatch 2 — streaming pull + bounce-back PUIS CL thermiques PUIS
+// macroscopique (fusion Étape C : 2 dispatches/pas au lieu de 3). Lit
+// f_col/g_col FIGÉS du dispatch 1 (même sémantique que le CPU, qui clone f/g
+// avant streaming) : f[i](x) ← f_col(x − c_i), sinon bounce-back
+// f_col(x, opp(i)). Les CL thermiques recalcule la valeur du nœud intérieur
+// DEPUIS g_col (figé, post-collision — la CL verticale du voisin est
+// geq(T_wall) recalculable localement) : aucune lecture inter-thread.
 // ---------------------------------------------------------------------------
 @compute @workgroup_size(16, 16)
-fn stream(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn stream_macro(@builtin(global_invocation_id) gid: vec3<u32>) {
     let ix = gid.x;
     let iy = gid.y;
     if (ix >= P.nx || iy >= P.ny) { return; }
     let k = iy * P.nx + ix;
-    for (var i = 0u; i < 9u; i = i + 1u) {
-        let sx = i32(ix) - CX[i];
-        let sy = i32(iy) - CY[i];
-        if (sx >= 0 && sx < i32(P.nx) && sy >= 0 && sy < i32(P.ny)) {
-            let src = (u32(sy) * P.nx + u32(sx)) * 9u + i;
-            f_out[9u * k + i] = f_col[src]; // déjà décalé
-            g_out[9u * k + i] = g_col[src];
-        } else {
-            // Bounce-back : la source est hors domaine (paroi), on réfléchit
-            // la distribution sortante opposée.
-            f_out[9u * k + i] = f_col[9u * k + OPP[i]];
-            // g : valeur provisoire, remplacée par les CL thermiques ensuite.
-            g_out[9u * k + i] = g_col[9u * k + i];
-        }
-    }
-}
+    let n = n_tot();
 
-// ---------------------------------------------------------------------------
-// Dispatch 3 — CL thermiques PUIS macroscopique. Le CPU applique les BC
-// thermiques AVANT update_macroscopic : le T de paroi est calculé sur le g
-// post-CL. Ordre CPU : verticales d'abord, horizontales ensuite (les coins
-// sont écrasées par la copie horizontale) — répliqué localement sans race
-// (la valeur copiée depuis le nœud intérieur est recalculée si ce nœud est
-// lui-même sur une paroi verticale).
-// ---------------------------------------------------------------------------
-@compute @workgroup_size(16, 16)
-fn macroscopic(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let ix = gid.x;
-    let iy = gid.y;
-    if (ix >= P.nx || iy >= P.ny) { return; }
-    let k = iy * P.nx + ix;
+    // Streaming pull + bounce-back, direction par direction (indices
+    // littéraux, offsets ±1/±nx explicites — mêmes CL que la boucle) :
+    // source (ix − cx, iy − cy) dans le domaine → pull, sinon bounce-back
+    // de la distribution sortante opposée (g : valeur provisoire, remplacée
+    // par les CL thermiques ci-dessous).
+    // i=0 rest : (0,0), opp=0 — toujours dans le domaine.
+    f_out[0u * n + k] = f_col[0u * n + k];
+    g_out[0u * n + k] = g_col[0u * n + k];
+    // i=1 E : source (ix−1, iy), opp=3 (W).
+    if (ix >= 1u) {
+        let src = k - 1u;
+        f_out[1u * n + k] = f_col[1u * n + src];
+        g_out[1u * n + k] = g_col[1u * n + src];
+    } else {
+        f_out[1u * n + k] = f_col[3u * n + k];
+        g_out[1u * n + k] = g_col[1u * n + k];
+    }
+    // i=2 N : source (ix, iy−1), opp=4 (S).
+    if (iy >= 1u) {
+        let src = k - P.nx;
+        f_out[2u * n + k] = f_col[2u * n + src];
+        g_out[2u * n + k] = g_col[2u * n + src];
+    } else {
+        f_out[2u * n + k] = f_col[4u * n + k];
+        g_out[2u * n + k] = g_col[2u * n + k];
+    }
+    // i=3 W : source (ix+1, iy), opp=1 (E).
+    if (ix + 1u < P.nx) {
+        let src = k + 1u;
+        f_out[3u * n + k] = f_col[3u * n + src];
+        g_out[3u * n + k] = g_col[3u * n + src];
+    } else {
+        f_out[3u * n + k] = f_col[1u * n + k];
+        g_out[3u * n + k] = g_col[3u * n + k];
+    }
+    // i=4 S : source (ix, iy+1), opp=2 (N).
+    if (iy + 1u < P.ny) {
+        let src = k + P.nx;
+        f_out[4u * n + k] = f_col[4u * n + src];
+        g_out[4u * n + k] = g_col[4u * n + src];
+    } else {
+        f_out[4u * n + k] = f_col[2u * n + k];
+        g_out[4u * n + k] = g_col[4u * n + k];
+    }
+    // i=5 NE : source (ix−1, iy−1), opp=7 (SW).
+    if (ix >= 1u && iy >= 1u) {
+        let src = k - P.nx - 1u;
+        f_out[5u * n + k] = f_col[5u * n + src];
+        g_out[5u * n + k] = g_col[5u * n + src];
+    } else {
+        f_out[5u * n + k] = f_col[7u * n + k];
+        g_out[5u * n + k] = g_col[5u * n + k];
+    }
+    // i=6 NW : source (ix+1, iy−1), opp=8 (SE).
+    if (ix + 1u < P.nx && iy >= 1u) {
+        let src = k - P.nx + 1u;
+        f_out[6u * n + k] = f_col[6u * n + src];
+        g_out[6u * n + k] = g_col[6u * n + src];
+    } else {
+        f_out[6u * n + k] = f_col[8u * n + k];
+        g_out[6u * n + k] = g_col[6u * n + k];
+    }
+    // i=7 SW : source (ix+1, iy+1), opp=5 (NE).
+    if (ix + 1u < P.nx && iy + 1u < P.ny) {
+        let src = k + P.nx + 1u;
+        f_out[7u * n + k] = f_col[7u * n + src];
+        g_out[7u * n + k] = g_col[7u * n + src];
+    } else {
+        f_out[7u * n + k] = f_col[5u * n + k];
+        g_out[7u * n + k] = g_col[7u * n + k];
+    }
+    // i=8 SE : source (ix−1, iy+1), opp=6 (NW).
+    if (ix >= 1u && iy + 1u < P.ny) {
+        let src = k + P.nx - 1u;
+        f_out[8u * n + k] = f_col[8u * n + src];
+        g_out[8u * n + k] = g_col[8u * n + src];
+    } else {
+        f_out[8u * n + k] = f_col[6u * n + k];
+        g_out[8u * n + k] = g_col[8u * n + k];
+    }
+
+    // --- CL thermiques. Le CPU applique les BC thermiques AVANT
+    // update_macroscopic : le T de paroi est calculé sur le g post-CL.
+    // Ordre CPU : verticales d'abord, horizontales ensuite (les coins sont
+    // écrasées par la copie horizontale). La valeur du nœud intérieur
+    // (post-stream) est recalculée DEPUIS g_col FIGÉ (post-collision) —
+    // aucune lecture g_out inter-thread, aucune course (la valeur pull/BB
+    // du voisin est identique à la sienne : g_col est le champ post-collision
+    // du même pas, avant tout streaming).
 
     // --- Parois verticales (chaude à gauche, froide à droite) : isothermes,
     // g paroi = geq(T_wall, u = 0) pour les 9 directions.
     if (ix == 0u) {
-        for (var i = 0u; i < 9u; i = i + 1u) {
-            g_out[9u * k + i] = geq(i, P.t_hot, 0.0, 0.0);
-        }
+        wall_iso(P.t_hot, k);
     } else if (ix == P.nx - 1u) {
-        for (var i = 0u; i < 9u; i = i + 1u) {
-            g_out[9u * k + i] = geq(i, P.t_cold, 0.0, 0.0);
-        }
+        wall_iso(P.t_cold, k);
     }
     // --- Parois horizontales : adiabatiques, g paroi = copie du nœud
-    // intérieur adjacent. Si ce nœud est lui-même un coin (paroi verticale),
-    // sa valeur post-CL est geq(T_wall) — recalculée localement pour éviter
-    // toute course avec le thread du nœud intérieur.
-    if (iy == 0u) {
-        let kin = (iy + 1u) * P.nx + ix;
-        for (var i = 0u; i < 9u; i = i + 1u) {
-            var gval = g_out[9u * kin + i];
-            if (ix == 0u) {
-                gval = geq(i, P.t_hot, 0.0, 0.0);
-            } else if (ix == P.nx - 1u) {
-                gval = geq(i, P.t_cold, 0.0, 0.0);
-            }
-            g_out[9u * k + i] = gval;
-        }
-    } else if (iy == P.ny - 1u) {
-        let kin = (iy - 1u) * P.nx + ix;
-        for (var i = 0u; i < 9u; i = i + 1u) {
-            var gval = g_out[9u * kin + i];
-            if (ix == 0u) {
-                gval = geq(i, P.t_hot, 0.0, 0.0);
-            } else if (ix == P.nx - 1u) {
-                gval = geq(i, P.t_cold, 0.0, 0.0);
-            }
-            g_out[9u * k + i] = gval;
+    // intérieur adjacent (post-stream, recalculé depuis g_col). Si ce nœud
+    // est lui-même un coin (paroi verticale), sa valeur post-CL est
+    // geq(T_wall) — recalculée localement (identité CPU).
+    if (iy == 0u || iy == P.ny - 1u) {
+        let iyin = select(iy + 1u, iy - 1u, iy == P.ny - 1u);
+        let kin = iyin * P.nx + ix;
+        // i=0 rest : post-stream = g_col du voisin (direction 0).
+        g_out[0u * n + k] = g_col[0u * n + kin];
+        // i=1 E : source du voisin (ix−1, iyin).
+        g_out[1u * n + k] = select(
+            g_col[1u * n + (kin - 1u)],
+            g_col[1u * n + kin],
+            ix < 1u,
+        );
+        // i=2 N : source du voisin (ix, iyin−1) — si le voisin est à
+        // iyin−1 hors domaine, bounce-back provisoire (même identité CPU).
+        g_out[2u * n + k] = select(
+            g_col[2u * n + (kin - P.nx)],
+            g_col[2u * n + kin],
+            iyin < 1u,
+        );
+        // i=3 W : source du voisin (ix+1, iyin).
+        g_out[3u * n + k] = select(
+            g_col[3u * n + (kin + 1u)],
+            g_col[3u * n + kin],
+            ix + 1u >= P.nx,
+        );
+        // i=4 S : source du voisin (ix, iyin+1).
+        g_out[4u * n + k] = select(
+            g_col[4u * n + (kin + P.nx)],
+            g_col[4u * n + kin],
+            iyin + 1u >= P.ny,
+        );
+        // i=5 NE : source du voisin (ix−1, iyin−1).
+        g_out[5u * n + k] = select(
+            g_col[5u * n + (kin - P.nx - 1u)],
+            g_col[5u * n + kin],
+            ix < 1u || iyin < 1u,
+        );
+        // i=6 NW : source du voisin (ix+1, iyin−1).
+        g_out[6u * n + k] = select(
+            g_col[6u * n + (kin - P.nx + 1u)],
+            g_col[6u * n + kin],
+            ix + 1u >= P.nx || iyin < 1u,
+        );
+        // i=7 SW : source du voisin (ix+1, iyin+1).
+        g_out[7u * n + k] = select(
+            g_col[7u * n + (kin + P.nx + 1u)],
+            g_col[7u * n + kin],
+            ix + 1u >= P.nx || iyin + 1u >= P.ny,
+        );
+        // i=8 SE : source du voisin (ix−1, iyin+1).
+        g_out[8u * n + k] = select(
+            g_col[8u * n + (kin + P.nx - 1u)],
+            g_col[8u * n + kin],
+            ix < 1u || iyin + 1u >= P.ny,
+        );
+        // Coin (ix ∈ {0, nx−1}) : le voisin intérieur (ix, iy±1) est lui-même
+        // sur la paroi verticale — le CPU copie sa valeur POST-CL verticale
+        // (= geq(T_wall), appliquée AVANT la copie horizontale), pas son
+        // post-stream. Écrasement identique au kernel validé 3 dispatches.
+        if (ix == 0u) {
+            wall_iso(P.t_hot, k);
+        } else if (ix == P.nx - 1u) {
+            wall_iso(P.t_cold, k);
         }
     }
 
-    // --- Macroscopique (ρ, u, T) depuis f_out / g_out (post-stream + CL).
+    // --- Macroscopique (ρ, u, T) depuis f_out / g_out (post-stream + CL) —
+    // déroulé, même ordre d'accumulation que la boucle (j = 0..9).
     var rho = 0.0;
     var mx = 0.0;
     var my = 0.0;
     var temp = 0.0;
-    for (var j = 0u; j < 9u; j = j + 1u) {
-        let fj = W[j] + f_out[9u * k + j]; // reconstruction offset
-        rho = rho + fj;
-        mx = mx + f32(CX[j]) * fj;
-        my = my + f32(CY[j]) * fj;
-        temp = temp + g_out[9u * k + j];
-    }
+    rho = rho + (W0 + f_out[0u * n + k]);
+    temp = temp + g_out[0u * n + k];
+    let f1 = W1 + f_out[1u * n + k];
+    let f2 = W1 + f_out[2u * n + k];
+    let f3 = W1 + f_out[3u * n + k];
+    let f4 = W1 + f_out[4u * n + k];
+    let f5 = W5 + f_out[5u * n + k];
+    let f6 = W5 + f_out[6u * n + k];
+    let f7 = W5 + f_out[7u * n + k];
+    let f8 = W5 + f_out[8u * n + k];
+    rho = rho + f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8;
+    mx = mx + f1 - f3 + f5 - f6 - f7 + f8;
+    my = my + f2 - f4 + f5 + f6 - f7 - f8;
+    temp = temp + g_out[1u * n + k] + g_out[2u * n + k] + g_out[3u * n + k]
+        + g_out[4u * n + k] + g_out[5u * n + k] + g_out[6u * n + k]
+        + g_out[7u * n + k] + g_out[8u * n + k];
     // Correction de vitesse Guo et al. 2002, éq. (16) : u_y += fy/(2ρ) —
-    // fy stockée par la collision de CE pas (champs du temps t), même F que
-    // la collision (sémantique CPU `update_macroscopic`).
+    // fy recalculé localement depuis le stock du temps t (même expression que
+    // la collision de CE pas — même F, sémantique CPU `update_macroscopic` ;
+    // le buffer fy global est supprimé).
     var ux = 0.0;
     var uy = 0.0;
-    let fy_node = fy[k];
+    let fy_node = rho * P.beta_eff * (temp - P.t_ref);
     if (rho > 1e-12) {
         ux = mx / rho;
         uy = my / rho + 0.5 * fy_node / rho;
@@ -406,7 +639,7 @@ impl GpuSolver {
         .map_err(|e| format!("wgpu : échec de création du device ({e})"))?;
 
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("cavity_kernel_3dispatch"),
+            label: Some("cavity_kernel_soa_2dispatch"),
             source: wgpu::ShaderSource::Wgsl(WGSL.into()),
         });
         let mk_pipe = |label: &'static str, entry: &'static str| {
@@ -420,8 +653,7 @@ impl GpuSolver {
             })
         };
         let pipe_collide = mk_pipe("cavity_collide", "collide");
-        let pipe_stream = mk_pipe("cavity_stream", "stream");
-        let pipe_macro = mk_pipe("cavity_macro", "macroscopic");
+        let pipe_stream_macro = mk_pipe("cavity_stream_macro", "stream_macro");
 
         let nx = sim.nx();
         let ny = sim.ny();
@@ -429,12 +661,13 @@ impl GpuSolver {
 
         // Buffers f/g : populations DÉCALÉES (f_i − w_i·ρ₀, g_i tel quel car
         // T̄ = 0). Conversion f64 → f32 à l'interface (parade FluidX3D).
+        // Layout SoA [direction][nœud] : f[i·n + k] (Étape C, porte G3).
         let mut f_off = vec![0.0f32; 9 * n];
         let mut g_off = vec![0.0f32; 9 * n];
         for k in 0..n {
             for i in 0..9 {
-                f_off[9 * k + i] = (sim.lbm.f[k][i] - Self::w_weight(i)) as f32;
-                g_off[9 * k + i] = sim.lbm.g[k][i] as f32;
+                f_off[i * n + k] = (sim.lbm.f[k][i] - Self::w_weight(i)) as f32;
+                g_off[i * n + k] = sim.lbm.g[k][i] as f32;
             }
         }
         let mk_pop = |label: &'static str, f: bool| {
@@ -456,9 +689,6 @@ impl GpuSolver {
         let f_col = Self::empty_storage(&device, 9 * n, "f_col");
         let g_col = Self::empty_storage(&device, 9 * n, "g_col");
 
-        // Force de flottabilité (réécrite à chaque pas par le dispatch 1) :
-        // initialisée à zéro, le premier dispatch collide la calcule.
-        let fy_buf = Self::empty_storage(&device, n, "fy");
         // ν_t : copie de l'état CPU (sanité des lectures avant le 1er pas).
         let nu_t_init: Vec<f32> = sim.nu_t.iter().map(|&v| v as f32).collect();
         let nu_t_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -519,7 +749,6 @@ impl GpuSolver {
         );
         let fcol = f_col.as_entire_binding();
         let gcol = g_col.as_entire_binding();
-        let fyb = fy_buf.as_entire_binding();
         let ntb = nu_t_buf.as_entire_binding();
         let stockb = stock_buf.as_entire_binding();
 
@@ -533,7 +762,6 @@ impl GpuSolver {
                 ent(5, stockb.clone()),
                 ent(6, fcol.clone()),
                 ent(7, gcol.clone()),
-                ent(8, fyb.clone()),
                 ent(9, ntb.clone()),
             ],
         );
@@ -547,52 +775,31 @@ impl GpuSolver {
                 ent(5, stockb.clone()),
                 ent(6, fcol.clone()),
                 ent(7, gcol.clone()),
-                ent(8, fyb.clone()),
                 ent(9, ntb.clone()),
             ],
         );
-        let bg_stream_a = mk_bg(
-            "bg_stream_a",
-            &pipe_stream.get_bind_group_layout(0),
-            &[
-                ent(0, uniform.clone()),
-                ent(3, fb.clone()),
-                ent(4, gb.clone()),
-                ent(6, fcol.clone()),
-                ent(7, gcol.clone()),
-            ],
-        );
-        let bg_stream_b = mk_bg(
-            "bg_stream_b",
-            &pipe_stream.get_bind_group_layout(0),
-            &[
-                ent(0, uniform.clone()),
-                ent(3, fa.clone()),
-                ent(4, ga.clone()),
-                ent(6, fcol.clone()),
-                ent(7, gcol.clone()),
-            ],
-        );
-        let bg_macro_a = mk_bg(
-            "bg_macro_a",
-            &pipe_macro.get_bind_group_layout(0),
+        let bg_stream_macro_a = mk_bg(
+            "bg_stream_macro_a",
+            &pipe_stream_macro.get_bind_group_layout(0),
             &[
                 ent(0, uniform.clone()),
                 ent(3, fb.clone()),
                 ent(4, gb.clone()),
                 ent(5, stockb.clone()),
-                ent(8, fyb.clone()),
+                ent(6, fcol.clone()),
+                ent(7, gcol.clone()),
             ],
         );
-        let bg_macro_b = mk_bg(
-            "bg_macro_b",
-            &pipe_macro.get_bind_group_layout(0),
+        let bg_stream_macro_b = mk_bg(
+            "bg_stream_macro_b",
+            &pipe_stream_macro.get_bind_group_layout(0),
             &[
                 ent(0, uniform.clone()),
                 ent(3, fa.clone()),
                 ent(4, ga.clone()),
                 ent(5, stockb.clone()),
-                ent(8, fyb.clone()),
+                ent(6, fcol.clone()),
+                ent(7, gcol.clone()),
             ],
         );
 
@@ -600,8 +807,7 @@ impl GpuSolver {
             device,
             queue,
             pipe_collide,
-            pipe_stream,
-            pipe_macro,
+            pipe_stream_macro,
             params_buf,
             f_a,
             g_a,
@@ -609,20 +815,20 @@ impl GpuSolver {
             g_b,
             f_col,
             g_col,
-            fy_buf,
             nu_t_buf,
             stock_buf,
             read_buf,
             bg_collide_a,
             bg_collide_b,
-            bg_stream_a,
-            bg_stream_b,
-            bg_macro_a,
-            bg_macro_b,
+            bg_stream_macro_a,
+            bg_stream_macro_b,
             nx,
             ny,
             time_step: 0,
             even: true,
+            batch_enc: None,
+            batch_len: 0,
+            batch_params: params,
             adapter_info,
         })
     }
@@ -699,27 +905,51 @@ impl GpuSolver {
         }
     }
 
-    /// Un pas de temps GPU : 3 dispatches ordonnés (collide → stream →
-    /// macroscopic) dans un seul compute pass — chaque dispatch est un
-    /// usage-scope wgpu, les barrières storage sont garanties entre
-    /// dispatches, aucune race. Le macroscopique est réécrit dans `stock`
-    /// (lu au sampling via `sync_into`/`read_fields`).
+    /// Un pas de temps GPU : 2 dispatches ordonnés (collide → stream_macro)
+    /// dans un seul compute pass — chaque dispatch est un usage-scope wgpu,
+    /// les barrières storage sont garanties entre dispatches, aucune race.
+    /// Le macroscopique est réécrit dans `stock` (lu au sampling via
+    /// `sync_into`/`read_fields`).
+    ///
+    /// Étape C (batching) : hors spin-up (params constants bit-à-bit), les
+    /// pas s'enchaînent dans un SEUL command encoder, flushé tous les
+    /// BATCH_STEPS pas ou avant tout readback — amortit l'overhead CPU de
+    /// création/soumission d'encoder. Pendant le spin-up (params varient à
+    /// chaque pas), un encoder par pas (sémantique identique à l'Étape A).
     pub fn step(&mut self, sim: &CavitySolver) {
         let params = Self::params_from(sim, self.time_step);
-        self.queue
-            .write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&params));
+        let batchable = self.batch_len > 0 && params == self.batch_params;
+
+        // Flush du batch en cours si le pas courant n'est pas batchable
+        // (changement de params : spin-up) ou batch plein.
+        if self.batch_len > 0 && !batchable {
+            self.flush();
+        }
+
+        if self.batch_len == 0 {
+            // Nouvel encoder : écrit les params du batch (constants sur
+            // toute sa durée — vérifié bit-à-bit à chaque pas).
+            self.queue
+                .write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&params));
+            self.batch_enc = Some(self.device.create_command_encoder(
+                &wgpu::CommandEncoderDescriptor { label: Some("step_batch") },
+            ));
+            self.batch_params = params;
+        }
+
+        let encoder = self
+            .batch_enc
+            .as_mut()
+            .expect("encoder batché présent après flush/création");
 
         // Ping-pong : pas pair lit A écrit B, pas impair inverse.
-        let (bg_collide, bg_stream, bg_macro) = if self.even {
-            (&self.bg_collide_a, &self.bg_stream_a, &self.bg_macro_a)
+        let (bg_collide, bg_stream_macro) = if self.even {
+            (&self.bg_collide_a, &self.bg_stream_macro_a)
         } else {
-            (&self.bg_collide_b, &self.bg_stream_b, &self.bg_macro_b)
+            (&self.bg_collide_b, &self.bg_stream_macro_b)
         };
         self.even = !self.even;
 
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("step") });
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("step_pass"),
@@ -730,18 +960,29 @@ impl GpuSolver {
             pass.set_pipeline(&self.pipe_collide);
             pass.set_bind_group(0, bg_collide, &[]);
             pass.dispatch_workgroups(wg_x, wg_y, 1);
-            pass.set_pipeline(&self.pipe_stream);
-            pass.set_bind_group(0, bg_stream, &[]);
-            pass.dispatch_workgroups(wg_x, wg_y, 1);
-            pass.set_pipeline(&self.pipe_macro);
-            pass.set_bind_group(0, bg_macro, &[]);
+            pass.set_pipeline(&self.pipe_stream_macro);
+            pass.set_bind_group(0, bg_stream_macro, &[]);
             pass.dispatch_workgroups(wg_x, wg_y, 1);
         }
-        self.queue.submit(Some(encoder.finish()));
         self.time_step += 1;
+        self.batch_len += 1;
+        if self.batch_len >= BATCH_STEPS {
+            self.flush();
+        }
+    }
+
+    /// Soumet l'encoder batché en attente (appelé avant tout readback et
+    /// tous les BATCH_STEPS pas).
+    fn flush(&mut self) {
+        if let Some(enc) = self.batch_enc.take() {
+            self.queue.submit(Some(enc.finish()));
+        }
+        self.batch_len = 0;
     }
 
     /// Lecture brute du staging (stock 4n + nu_t n f32) — synchro GPU→CPU.
+    /// Précondition : l'appelant a flushé l'encoder batché (sync_into /
+    /// read_fields / total_mass appellent `flush()` avant `read_raw`).
     fn read_raw(&self) -> Result<Vec<f32>, String> {
         let n = self.nx * self.ny;
         let mut encoder = self
@@ -789,7 +1030,8 @@ impl GpuSolver {
     /// Réinjecte le macroscopique GPU (ρ, ux, uy, T) et ν_t dans les champs
     /// du solveur CPU — SANS toucher au pas de temps CPU. Permet de réutiliser
     /// `post.rs`, `TimeAverager` et les exports de snapshots inchangés.
-    pub fn sync_into(&self, sim: &mut CavitySolver) -> Result<(), String> {
+    pub fn sync_into(&mut self, sim: &mut CavitySolver) -> Result<(), String> {
+        self.flush(); // le batch en attente doit être soumis avant le readback
         let n = self.nx * self.ny;
         let data = self.read_raw()?;
         for k in 0..n {
@@ -804,7 +1046,9 @@ impl GpuSolver {
 
     /// Lit le buffer stock (ρ, ux, uy, T) — synchro GPU→CPU. Retourne les
     /// champs en f64 (conversions f32→f64 à l'interface), layout k = iy*nx+ix.
-    pub fn read_fields(&self) -> Result<(Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>), String> {
+    #[allow(dead_code)] // API publique conservée (sync_into est le chemin actif)
+    pub fn read_fields(&mut self) -> Result<(Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>), String> {
+        self.flush();
         let n = self.nx * self.ny;
         let data = self.read_raw()?;
         let mut rho = vec![0.0f64; n];
@@ -821,17 +1065,20 @@ impl GpuSolver {
     }
 
     /// Masse totale Σρ (lit le stock — diagnostic de conservation).
-    pub fn total_mass(&self) -> Result<f64, String> {
+    #[allow(dead_code)] // API publique conservée (diagnostic de conservation futur)
+    pub fn total_mass(&mut self) -> Result<f64, String> {
         let (rho, _, _, _) = self.read_fields()?;
         Ok(rho.iter().sum())
     }
 
     /// Nombre de pas exécutés.
+    #[allow(dead_code)] // API publique conservée (utilisée par les diagnostics futurs)
     pub fn time_step(&self) -> usize {
         self.time_step
     }
 
     /// Dimensions de la grille.
+    #[allow(dead_code)] // API publique conservée (utilisée par les diagnostics futurs)
     pub fn dims(&self) -> (usize, usize) {
         (self.nx, self.ny)
     }
@@ -855,7 +1102,7 @@ mod gpu_tests {
     #[ignore = "nécessite un adaptateur GPU (Metal) — cargo test --release -- --ignored"]
     fn gpu_init_from_solver() {
         let sim = small_solver();
-        let gpu = GpuSolver::from_solver(&sim).expect("init GPU");
+        let mut gpu = GpuSolver::from_solver(&sim).expect("init GPU");
         assert_eq!(gpu.dims(), (16, 64));
         assert_eq!(gpu.time_step(), 0);
         // Le stock initial doit correspondre aux champs du solveur CPU.
