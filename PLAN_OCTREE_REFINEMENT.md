@@ -204,6 +204,18 @@ multi-niveaux :
    avec Δx local par niveau). Porte : V5.
 5. **Étape E (V4)** : Ra=1e10 2 niveaux vs 101.19 — le gain de coût est l'objectif
    final. Porte : V4 + Nuc à ±3 %.
+6. **Étape F (V6, ajout 2026-10-30)** : raffinement **multi-niveaux jusqu'au
+   centre** — au lieu d'un seul niveau ×2 collé aux parois, l'escalier octree
+   suit la loi tanh sur TOUTES ses marches : niveaux Δx/2, Δx, 2Δx, 4Δx…·Δx_max
+   répartis selon les frontières du §0.1 (2·Δx_min à x≈0.020, 4·Δx_min à
+   x≈0.066, 8·Δx_min à x≈0.164, symétrique par rapport à x=0.5). Motivation :
+   à Ra=1e10 l'écoulement n'est pas confiné aux parois — l'escalier 1 niveau
+   sous-amortit le noyau et laisse l'écart Nuc à −45 % vs Trias ; l'objectif
+   est d'approcher Nuc ≈ 100 à coût fixé. Contraintes : rescaling f^neq par
+   PAIRE de niveaux adjacents (même formule ξ que V1, généralisée), pas de
+   temps multiple par bloc (chaque niveau a son sous-pas acoustique 2^k),
+   Smagorinsky avec Δx local par niveau (déjà prévu V5). Prérequis : porte V2
+   verte sur le 2 niveaux (le fixer est en train de la déboguer).
 
 ## 4. Risques et garde-fous
 
@@ -225,3 +237,55 @@ multi-niveaux :
   restart) — sinon désynchronisation des flux.
 - Le masque de blocs doit inclure les parois dans le niveau fin (bounce-back y est
   le plus précis) — jamais de bounce-back sur niveau grossier aux parois chauffées.
+
+## 6. Bilan — Mur β de compressibilité (campagne octree, --dynamic-smag) — 2026-10-31
+
+Campagne menée sur grilles octree avec le mode dynamique (`--dynamic-smag`,
+jobs 8, restart depuis champ établi sauf P1 cold) : **le passage 64×256 → 128×512
+n'a PAS levé le mur** de compressibilité du schéma D2Q9 + Guo + TRT.
+
+| Run | Ra | Grille équiv. | ν | τ⁺ fin | β | max ρ_dev | Résultat |
+|---|---|---|---|---|---|---|---|
+| Palier 1 | 1e8 | 64×256 | 0.0040 | 0.512 | 1.36e-4 | 2.42e-2 | STABLE 300k pas, Nuc 2.3052 |
+| Probe 2e8 | 2e8 | 64×256 | 0.0040 | 0.512 | 2.72e-4 | 6.03e-2 | STABLE 30k pas |
+| Probe 3e8 | 3e8 | 64×256 | 0.0040 | 0.512 | 4.08e-4 | 9.63e-2 | STABLE 30k pas (à la limite : max_u 0.088, ρ_dev oscillant) |
+| Probe 4e8 | 4e8 | 64×256 | 0.0040 | 0.512 | 5.43e-4 | 1.30e-1 | AVORT garde-fou Ma (max_u 0.112 > 0.10, pas 5k) |
+| 6.4e8 cold (P1) | 6.4e8 | 64×256 | 0.0040 | 0.512 | 8.78e-4 | — | NaN < 5k pas, DEPUIS LA CONDUCTION (sans restart) |
+| 6.4e8 64×256 | 6.4e8 | 64×256 | 0.0040 | 0.512 | 8.78e-4 | — | NaN < 10k pas |
+| 6.4e8 128×512 a | 6.4e8 | 128×512 | 0.0022 | 0.5065 | 2.52e-4 | — | NaN < 10k pas |
+| 6.4e8 128×512 b | 6.4e8 | 128×512 | 0.0040 | 0.5121 | 8.78e-4 | 1.06e-2 au pas 0 | NaN < 10k pas |
+| 1e10 direct | 1e10 | 64×256 | 0.0020 | 0.506 | 3.40e-3 | — | NaN < 10k pas |
+
+Conclusions côté raffinement :
+
+1. **Le raffinement ne lève pas le mur** : 6.4e8 diverge en < 10k pas sur 64×256
+   comme sur 128×512 (deux tentatives a/b, dont b à τ⁺=0.5121 et ν=0.004, avec
+   ρ_dev déjà 1.06e-2 au pas 0). Hypothèses exclues : marge TRT, résolution BL
+   (bl-width 8, 2 niveaux, 35878 nœuds), transitoire de reprise (P1 diverge
+   depuis la conduction même, sans restart), viscosité sous le plancher.
+2. **Pourquoi le raffinement est impuissant** : β = Ra·ν·α/Lz³ en unités
+   grossières — raffiner ne change pas β ni l'équilibre ρ_dev visé. Le mur est
+   quasi-statique de compressibilité faible : ρ_dev suit β linéairement (réponse
+   acoustique du lattice au forçage Guo) ; quand ρ_dev ~1e-2 à 2e-2 coexiste avec
+   u~0.05, la marge de positivité de f_eq D2Q9 est épuisée.
+3. **Plafond du schéma (config octree) — BORNE BETA-STAR mesurée** : à ν=0.004,
+   **β* entre 4.08e-4 (3e8, stable à la limite : ρ_dev 9.6e-2) et 5.43e-4 (4e8,
+   avorté sur garde-fou Ma local : max_u 0.112 > 0.10)**, soit **plafond
+   Ra ≈ 3-4e8**. Relation ρ_dev ∝ β quasi-linéaire (1.36e-4→2.42e-2,
+   2.72e-4→6.03e-2, 4.08e-4→9.63e-2, 5.43e-4→1.30e-1). À ν=0.002 (plancher
+   τ⁺=0.506), β(1e10)=3.4e-3 = 6× le mur fatal → Ra=1e10 hors de portée
+   structurelle de la **config octree** (le crate uniforme l'atteint, cf. §5.1
+   du plan échelles ; la différence est le forçage Guo porté par la grille de
+   base grossière).
+4. **Conséquence pour ce plan (claim §2.5 re-scopé)** : l'objectif Ra=1e10
+   (Étapes E/F) est hors de portée structurelle de la config octree — le
+   forçage Guo porté par la grille de base grossière (β = Ra·ν·α/Lz³ en unités
+   du niveau L0) génère une déviation ρ_dev ∝ β qui épuise la marge de
+   positivité de f_eq (mur de compressibilité quasi-statique, établi sur 2
+   grilles, borne β* ∈ [4.08, 5.43]e-4). **Le plafond octree est Ra ≈ 3-4e8**
+   (à ν=0.004) — bilans exploitables à 1e8/2e8/3e8. À Ra=1×10¹⁰, seule la
+   grille uniforme fine (96×384) est exploitable : l'écart Nuc de −40 à −47 %
+   vs C2D2 y est une limite de résolution (w_max 0.04 vs cible 0.22-0.24),
+   non levée par le Smagorinsky dynamique. Combler l'un ou l'autre
+   nécessiterait une collision sans plancher τ (RR/cumulant) — perspective de
+   thèse, pas un levier immédiat.

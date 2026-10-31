@@ -161,7 +161,7 @@ Le modèle mixte interpole entre Smagorinsky (exposant α) et une forme en qsm/�
 | Test | Référence | Critère |
 |---|---|---|
 | Ra=1e8, 64×256, dynamic ON vs Cs=0.1 fixe | run `ra1e8_64x256_les` (Nuc 30.58) | Nuc à ±2 %, ν_t/ν même ordre |
-| Ra=1e10, 96×384 LES dynamique | run `ra1e10_96x384_les` (en cours, Smagorinsky fixe) + **C2D2/C2D3 thèse** (Nuc 100.2–100.36, ν_sm/ν 0.48–0.54) | Nuc dans la fourchette thèse — **cible principale** (α=0.5, Tab. 2.3 ; comparaison LES↔LES) |
+| Ra=1e10, 96×384 LES dynamique | run `ra1e10_96x384_les` (en cours, Smagorinsky fixe) + **C2D2/C2D3 thèse** (Nuc 100.2–100.36, ν_sm/ν 0.48–0.54) | Nuc dans la fourchette thèse — **cible principale** (α=0.5, Tab. 2.3 ; comparaison LES↔LES) — **bilan §5.1 : écart −40 à −47 % = limite de résolution uniforme** |
 | Ra=1e10, 256×1024 | Nuc 101.19 (ν_t/ν ≈ 13 % au pic) | dégradation minimale vs Cs fixe |
 | Ra=1e8, 64×256, Cs=0.2 fixe | Nuc 29.47, ν_t/ν 18.4 % | cohérence curseur (le dynamique doit se rapprocher du fixe optimal) |
 
@@ -169,6 +169,88 @@ Le modèle mixte interpole entre Smagorinsky (exposant α) et une forme en qsm/�
   (test existant `tests.rs` à étendre)
 - Critère SGS thèse : ν_sm/ν C2D2/C2D3 = 0.48–0.54 — le dynamique doit produire
   un ratio dans cette gamme sur la grille 96×384 (sinon : moyenne, borne, ou α à revoir)
+
+### 5.1 Bilan campagne Ra=1e10 (96×384, 2M pas, fenêtre 500k→2M) — 2026-10-31
+
+| Config | Nuc | ±σ | Δ vs fixe | Écart vs C2D2 (100.2) |
+|---|---|---|---|---|
+| fixe (Cs=0.1) | 55.20 | — | — | −44.9 % |
+| dyn_a4 (α-mult 4) | 52.66 | 0.91 | −4.6 % | −47.5 % |
+| dyn_a25 (α-mult 2.5) | 59.83 | 0.36 | +8.4 % | −40.3 % |
+
+- Hiérarchie **a4 < fixe < a25** cohérente avec le plancher ν_t ≥ 2.33ν
+  (ν_t saturé à 1.167e-3 = 2.33·ν) : α-mult 2.5 amortit moins que le fixe,
+  α-mult 4 amortit plus — plus on s'approche du plancher, plus Nuc monte.
+- Fluctuations resserrées avec α=2.5 (σ 0.36 vs 0.91 pour a4) : écoulement plus stable.
+- w_max = 0.0399 (fixe 0.0541, cible thèse 0.22–0.24) : pic sous-résolu —
+  limite de résolution de la grille uniforme, pas du modèle SGS
+  (levier : octree V6, équiv. 256×1024 près des parois).
+- dyn_a25 : export final partiellement échoué (répertoire déplacé pendant le run) —
+  bilan recalculé depuis `output/logs/ra1e10_96x384_dyn_a25.log` (n=301 échantillons),
+  snapshot pas 1.95M intact.
+
+### 5.2 Mur β de compressibilité (campagne octree, --dynamic-smag) — 2026-10-31
+
+Bilan d'une campagne sur grilles octree avec le mode dynamique activé
+(`--dynamic-smag`, jobs 8, restart depuis champ établi sauf P1 cold) : mise en
+évidence d'un **mur de compressibilité** du schéma D2Q9 + Guo + TRT, indépendant
+de la résolution et de la marge TRT. Ce mur est **propre à la configuration
+octree** : la campagne uniforme (§5.1) a atteint Ra=1e10 (Nuc 101.19 sur
+256×1024) — la différence est le forçage Guo évalué sur la grille de base
+grossière (Lz=255 en unités du niveau L0), où β en unités lattice est
+d'autant plus grand que le raffinement est fort (β = Ra·ν·α/Lz³ avec Lz la
+hauteur en unités du niveau porteur du forçage).
+
+| Run | Ra | Grille équiv. | ν | τ⁺ fin | β | max ρ_dev | Résultat |
+|---|---|---|---|---|---|---|---|
+| Palier 1 | 1e8 | 64×256 | 0.0040 | 0.512 | 1.36e-4 | 2.42e-2 | STABLE 300k pas, Nuc 2.3052 |
+| Probe 2e8 | 2e8 | 64×256 | 0.0040 | 0.512 | 2.72e-4 | 6.03e-2 | STABLE 30k pas |
+| Probe 3e8 | 3e8 | 64×256 | 0.0040 | 0.512 | 4.08e-4 | 9.63e-2 | STABLE 30k pas (à la limite : max_u 0.088, ρ_dev oscillant) |
+| Probe 4e8 | 4e8 | 64×256 | 0.0040 | 0.512 | 5.43e-4 | 1.30e-1 | AVORT garde-fou Ma (max_u 0.112 > 0.10, pas 5k) |
+| 6.4e8 cold (P1) | 6.4e8 | 64×256 | 0.0040 | 0.512 | 8.78e-4 | — | NaN < 5k pas, DEPUIS LA CONDUCTION (sans restart) |
+| 6.4e8 64×256 | 6.4e8 | 64×256 | 0.0040 | 0.512 | 8.78e-4 | — | NaN < 10k pas |
+| 6.4e8 128×512 a | 6.4e8 | 128×512 | 0.0022 | 0.5065 | 2.52e-4 | — | NaN < 10k pas |
+| 6.4e8 128×512 b | 6.4e8 | 128×512 | 0.0040 | 0.5121 | 8.78e-4 | 1.06e-2 au pas 0 | NaN < 10k pas |
+| 1e10 direct | 1e10 | 64×256 | 0.0020 | 0.506 | 3.40e-3 | — | NaN < 10k pas |
+
+Conclusions :
+
+1. **Mur sur β absolu** : à ν et τ⁺ identiques, 2e8 tient (β=2.72e-4) mais 6.4e8
+   meurt (β=8.78e-4). Le saut Δβ n'est pas le discriminant (le ×4.6 du palier 1
+   a survécu ; le ×1.94 de 6.4e8a a tué).
+2. **Hypothèses exclues par l'expérience** : (a) marge TRT τ⁺ — 6.4e8b diverge à
+   τ⁺=0.5121, la marge démontrée tenable au palier 1e8 ; (b) résolution BL — le
+   raffinement 128×512 (bl-width 8, 2 niveaux, 35878 nœuds) n'a pas levé le mur ;
+   (c) transitoire de reprise / f^neq=0 au restart — P1 diverge depuis la
+   conduction même, sans restart ; (d) viscosité sous le plancher — 6.4e8b est à
+   ν=0.004 > plancher 0.002.
+3. **Mécanisme** : mur quasi-statique de compressibilité faible — la déviation de
+   densité d'équilibre ρ_dev suit β linéairement (réponse acoustique du lattice
+   au forçage Guo) ; quand ρ_dev ~1e-2 à 2e-2 coexiste avec u~0.05, la marge de
+   positivité de f_eq D2Q9 est épuisée. Le raffinement ne change pas β
+   (β = Ra·ν·α/Lz³ en unités grossières) et ne change pas l'équilibre ρ_dev visé.
+4. **Plafond du schéma (config octree) — BORNE BETA-STAR mesurée** : D2Q9 +
+   Guo + TRT à ν=0.004 → **β* entre 4.08e-4 (3e8, stable à la limite :
+   ρ_dev 9.6e-2) et 5.43e-4 (4e8, avorté sur garde-fou Ma local : max_u
+   0.112 > 0.10)**, soit **plafond Ra ≈ 3-4e8 à ν=0.004**. Relation ρ_dev ∝ β
+   vérifiée quasi-linéairement : 1.36e-4→2.42e-2, 2.72e-4→6.03e-2,
+   4.08e-4→9.63e-2, 5.43e-4→1.30e-1. À ν=0.002 (plancher τ⁺=0.506),
+   β(1e10)=3.4e-3 = 6× le mur fatal → **Ra=1e10 est hors de portée
+   structurelle de la config octree** (le crate uniforme l'atteint, §5.1 ;
+   la différence est le forçage Guo porté par la grille de base grossière).
+5. **Conséquence thèse (claim §2.5 re-scopé)** : la configuration octree
+   atteint son plafond à **Ra ≈ 3-4×10⁸** (à ν=0.004) — le forçage de
+   flottabilité Guo, porté par la grille de base grossière (β = Ra·ν·α/Lz³ en
+   unités du niveau L0), génère une déviation de densité ρ_dev ∝ β qui épuise
+   la marge de positivité de f_eq (mur de compressibilité, quasi-statique —
+   établi sur 2 grilles, hypothèses TRT/raffinement/reprise exclues par
+   l'expérience, borne β* ∈ [4.08, 5.43]e-4). À Ra=1×10¹⁰, seule la grille
+   uniforme fine (96×384) est exploitable : l'écart Nuc de −40 à −47 % vs
+   C2D2 y est une **limite de résolution** (w_max 0.04 vs cible 0.22-0.24,
+   pic sous-résolu, §5.1), non levée par le Smagorinsky dynamique (hiérarchie
+   a4 < fixe < a25). Combler l'un ou l'autre — monter l'octree vers 1e10 ou
+   affiner l'uniforme — nécessiterait une collision sans plancher τ
+   (RR/cumulant).
 
 ## 6. Ordre d'implémentation
 
