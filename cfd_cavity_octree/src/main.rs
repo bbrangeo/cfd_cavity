@@ -47,6 +47,15 @@ struct Args {
     /// Étape G : snapshot binaire de départ (initialise les champs du
     /// solveur octree ; même layout requis — pas d'interpolation).
     restart: Option<String>,
+    /// Étape H : vitesse max cible en unités réseau (calage ν, même
+    /// sémantique que le crate uniforme cli.rs l.27/109).
+    utarget: f64,
+    /// Étape H : multiplicateur de viscosité initiale (rampe anti-overshoot,
+    /// défaut 1.0 ; port d'interface crate uniforme).
+    nu_start_mult: f64,
+    /// Étape H : viscosité forcée (bypass calage utarget ; Option, None =
+    /// chemin calage).
+    nu: Option<f64>,
 }
 
 impl Default for Args {
@@ -74,6 +83,9 @@ impl Default for Args {
             eta_test: 2.0,
             snapshot_every: 0,
             restart: None,
+            utarget: cfd_cavity_octree::cavity::UTARGET,
+            nu_start_mult: 1.0,
+            nu: None,
         }
     }
 }
@@ -108,6 +120,11 @@ Options (clé=valeur) :
   --restart <path>        snapshot binaire de départ (initialise les champs
                           du solveur octree ; même layout requis — les dims
                           de chaque grille doivent matcher exactement)
+  --utarget <f64>         u_max cible (unités réseau, calage ν) [défaut: 0.02]
+  --nu-start-mult <f64>   rampe viscosité initiale/ν (anti-overshoot)
+                          [défaut: 1.0 = désactivé]
+  --nu <f64>              viscosité forcée (bypass calage utarget ; descendre
+                          sous le plancher 0.002 pour grilles fines type SND)
 ";
 
 fn parse_args() -> Result<Args, String> {
@@ -179,6 +196,29 @@ fn parse_args() -> Result<Args, String> {
                     .map_err(|_| format!("--snapshot-every : entier attendu, lu '{value}'"))?
             }
             "restart" => args.restart = Some(value),
+            // Étape H : port crate uniforme (cli.rs l.190-191/230-244).
+            "utarget" => {
+                args.utarget = value
+                    .parse()
+                    .map_err(|_| format!("--utarget : flottant attendu, lu '{value}'"))?
+            }
+            "nu-start-mult" | "nu_start_mult" => {
+                args.nu_start_mult = value
+                    .parse()
+                    .map_err(|_| format!("--nu-start-mult : flottant attendu, lu '{value}'"))?
+            }
+            "nu" => {
+                let v: f64 = value
+                    .parse()
+                    .map_err(|_| format!("--nu : flottant attendu, lu '{value}'"))?;
+                if !(v > 0.0) || !v.is_finite() {
+                    return Err("--nu doit être > 0 et fini".into());
+                }
+                if v >= 0.002 {
+                    return Err(format!("--nu {v} ≥ 0.002 : inutile, le calage utarget suffit ; --nu est réservé au sous-plancher"));
+                }
+                args.nu = Some(v);
+            }
             "ra" => args.ra = value.parse().map_err(|_| format!("--ra : flottant attendu, lu '{value}'"))?,
             "pr" => args.pr = value.parse().map_err(|_| format!("--pr : flottant attendu, lu '{value}'"))?,
             "steps" => args.steps = value.parse().map_err(|_| format!("--steps : entier attendu, lu '{value}'"))?,
@@ -230,6 +270,13 @@ fn parse_args() -> Result<Args, String> {
     if args.jobs == 0 {
         return Err("jobs doit être ≥ 1".into());
     }
+    // Étape H : validations copiées du crate uniforme (src/cli.rs).
+    if !(args.utarget > 0.0) || !args.utarget.is_finite() {
+        return Err("utarget doit être > 0 et fini".into());
+    }
+    if args.nu_start_mult < 1.0 {
+        return Err("nu-start-mult doit être ≥ 1 (multiplicateur de viscosité initiale)".into());
+    }
     Ok(args)
 }
 
@@ -259,6 +306,19 @@ fn main() {
         args.jobs,
         if args.odd_exact { "exact (τ⁻)" } else { "1/2 (approx.)" }
     );
+    // Étape H : calage ν (--utarget / --nu override).
+    if let Some(n) = args.nu {
+        println!("Étape H : nu forcé = {n} (bypass calage utarget = {})", args.utarget);
+    } else if args.utarget != cfd_cavity_octree::cavity::UTARGET {
+        println!("Étape H : calage ν via utarget = {}", args.utarget);
+    }
+    if args.nu_start_mult > 1.0 {
+        println!(
+            "Étape H : rampe de viscosité nu-start-mult = {} sur {} pas (spin-up)",
+            args.nu_start_mult,
+            ((args.ny0 / 10).max(200)).min(2000)
+        );
+    }
 
     // Pool rayon configuré avant toute boucle parallèle (--jobs N), même
     // pattern que le crate uniforme : cap au nombre de cœurs avec warning.
@@ -278,11 +338,13 @@ fn main() {
         args.bl_width,
         args.ra,
         args.pr,
-        cfd_cavity_octree::cavity::UTARGET,
+        args.utarget,
         args.seed,
         args.jobs,
         args.odd_exact,
         args.levels,
+        args.nu_start_mult,
+        args.nu,
     );
     // Étape D : modèle d'échelles mixtes dynamiques (porte V5) — setter du
     // solveur, même sémantique que le crate uniforme.

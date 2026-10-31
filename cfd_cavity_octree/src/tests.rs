@@ -395,7 +395,7 @@ fn v1_xi_matches_relaxation_time_ratio() {
 /// (dégage les pics d'interface — préliminaire du claim V2).
 #[test]
 fn v2_cavity_mass_conserved_with_guo_force() {
-    let mut sim = CavitySolver::new(32, 64, 4, 1.0e6, 0.71, 0.02, 42, 1, false, 2);
+    let mut sim = CavitySolver::new(32, 64, 4, 1.0e6, 0.71, 0.02, 42, 1, false, 2, 1.0, None);
     let n0 = (sim.nx0 * sim.ny0) as f64;
     for step in 0..10 {
         sim.step_cavity();
@@ -417,7 +417,7 @@ fn v2_cavity_mass_conserved_with_guo_force() {
 /// couvre bien les deux niveaux (max global ≥ max interfaces).
 #[test]
 fn v2_noise_stats_bounded_and_covers_both_levels() {
-    let mut sim = CavitySolver::new(32, 64, 4, 1.0e6, 0.71, 0.02, 42, 1, false, 2);
+    let mut sim = CavitySolver::new(32, 64, 4, 1.0e6, 0.71, 0.02, 42, 1, false, 2, 1.0, None);
     let mut prev = 0.0f64;
     for step in 0..20 {
         sim.step_cavity();
@@ -448,7 +448,7 @@ fn v2_noise_stats_bounded_and_covers_both_levels() {
 /// gradient 2ᵉ liaison et l'échelle Lz sur champ non perturbé).
 #[test]
 fn v2_nusselt_conductive_initial() {
-    let sim = CavitySolver::new(32, 64, 4, 1.0e6, 0.71, 0.02, 42, 1, false, 2);
+    let sim = CavitySolver::new(32, 64, 4, 1.0e6, 0.71, 0.02, 42, 1, false, 2, 1.0, None);
     // Champ initial : T linéaire + perturbation ±1e-3 ⇒ Nuc ≈ 1 à ±3e-2
     // (perturbation relative 1e-3 sur un gradient moyen 1/31, i.e. ~3 %).
     let nuc = nusselt_hot(&sim.coarse);
@@ -476,7 +476,7 @@ fn v2_nusselt_conductive_initial() {
 ///    (position physique |x − paroi| ≤ 2·dx_base, frontière §0.1).
 #[test]
 fn v6_multilevel_mapping_structure() {
-    let sim = CavitySolver::new(32, 64, 4, 1.0e6, 0.71, 0.02, 42, 1, false, 3);
+    let sim = CavitySolver::new(32, 64, 4, 1.0e6, 0.71, 0.02, 42, 1, false, 3, 1.0, None);
     assert_eq!(sim.levels, 3, "levels");
     let nu0 = sim.nu_lu;
 
@@ -547,7 +547,7 @@ fn v6_multilevel_mapping_structure() {
 /// couverture du monitoring sur les 3 niveaux (le bruit global inclut L2).
 #[test]
 fn v6_cavity_3levels_stable_short() {
-    let mut sim = CavitySolver::new(32, 64, 4, 1.0e6, 0.71, 0.02, 42, 1, false, 3);
+    let mut sim = CavitySolver::new(32, 64, 4, 1.0e6, 0.71, 0.02, 42, 1, false, 3, 1.0, None);
     let n0 = (sim.nx0 * sim.ny0) as f64;
     for step in 0..10 {
         sim.step_cavity();
@@ -575,7 +575,7 @@ fn v6_cavity_3levels_stable_short() {
 
 /// Petit solveur cavité octree pour les tests SGS (géométrie compacte V2).
 fn small_solver() -> CavitySolver {
-    CavitySolver::new(32, 64, 4, 1.0e6, 0.71, 0.02, 42, 1, false, 2)
+    CavitySolver::new(32, 64, 4, 1.0e6, 0.71, 0.02, 42, 1, false, 2, 1.0, None)
 }
 
 /// Test SGS 1 (port de `mixed_factor_alpha_half_is_geometric_mean`) :
@@ -625,7 +625,7 @@ fn dynamic_smag_off_matches_fixed_cs_nu_t() {
 /// coefficients C^ν_dyn bornés [0, 0.04].
 #[test]
 fn dynamic_smag_on_runs_sane_and_reports_coefficients() {
-    let mut sim = CavitySolver::new(32, 64, 4, 1.0e6, 0.71, 0.02, 42, 1, false, 3);
+    let mut sim = CavitySolver::new(32, 64, 4, 1.0e6, 0.71, 0.02, 42, 1, false, 3, 1.0, None);
     sim.set_dynamic_sgs(true, 0.5, -0.1, 2.0);
     for step in 0..5 {
         sim.step_cavity();
@@ -679,7 +679,7 @@ fn dynamic_smag_on_runs_sane_and_reports_coefficients() {
 
 /// Petit solveur cavité octree levels=3 pour les tests snapshots.
 fn small_solver_l3() -> CavitySolver {
-    CavitySolver::new(32, 64, 4, 1.0e6, 0.71, 0.02, 42, 1, false, 3)
+    CavitySolver::new(32, 64, 4, 1.0e6, 0.71, 0.02, 42, 1, false, 3, 1.0, None)
 }
 
 /// Test Étape G 1 : round-trip encode→decode→encode bit-identique sur un
@@ -776,6 +776,65 @@ fn snapshot_restart_restores_distributions() {
         }
         assert!((rho - restored.coarse.rho[k]).abs() < 1e-12, "ρ ≠ Σf");
     }
+
+    // --- Continuité des diagnostics à la reprise (avis oracle : le mapping
+    // restart est là où un bug contaminerait le champ silencieusement) —
+    // 1 pas après restauration reproduit le pas suivant du solveur d'origine
+    // à la tolérance du transitoire de restart documenté : le snapshot
+    // exporte les MOMENTS, le restart reconstruit f/g = équilibres, donc le
+    // non-équilibre d'interface accumulé du solveur d'origine n'est pas
+    // restauré (écart O(non-équilibre) ≈ 1e-3 après 1 pas, amorti ensuite).
+    // Un bug de mapping donnerait des écarts O(0.1) — les tolérances sont 2
+    // ordres de grandeur en dessous. ---
+    sim.step_cavity();
+    restored.step_cavity();
+    let nx0 = sim.nx0;
+    for k in 0..nx0 * sim.ny0 {
+        assert!(
+            (sim.coarse.rho[k] - restored.coarse.rho[k]).abs() < 5e-4,
+            "continuité restart : rho coarse discontinu (nœud {k}) : {} vs {}",
+            sim.coarse.rho[k],
+            restored.coarse.rho[k]
+        );
+        assert!(
+            (sim.coarse.temp[k] - restored.coarse.temp[k]).abs() < 1e-2,
+            "continuité restart : temp coarse discontinu (nœud {k}) : {} vs {}",
+            sim.coarse.temp[k],
+            restored.coarse.temp[k]
+        );
+    }
+    // Diagnostics de monitoring continus : même bruit acoustique, même masse,
+    // même Nuc (le pas de reprise est quasi indistinguable du pas suivant).
+    let n0 = sim.noise_stats();
+    let nr = restored.noise_stats();
+    assert!(
+        (n0.max_rho_dev - nr.max_rho_dev).abs() < 5e-3,
+        "max_rho_dev discontinu au restart : {} vs {}",
+        n0.max_rho_dev,
+        nr.max_rho_dev
+    );
+    assert!(
+        (n0.masse - nr.masse).abs() < 5e-6,
+        "masse discontinue au restart : {} vs {}",
+        n0.masse,
+        nr.masse
+    );
+    // Nuc continu : même gradient thermique 2ᵉ liaison. Le Nuc est une
+    // dérivée 2ᵉ ordre à la paroi : il amplifie le transitoire de
+    // reconstruction des équilibres (mesuré 3.8e-2 à 1 pas) — tolérance
+    // 5e-2, toujours 2× sous le seuil O(0.1) d'un bug de mapping.
+    let nuc0 = crate::cavity::nusselt_hot(&sim.coarse);
+    let nucr = crate::cavity::nusselt_hot(&restored.coarse);
+    assert!(
+        (nuc0 - nucr).abs() < 5e-2,
+        "Nuc discontinu au restart : {nuc0} vs {nucr}"
+    );
+    println!(
+        "continuité restart 1 pas : |Δmasse| = {:.3e} | |Δmax_rho_dev| = {:.3e} | |ΔNuc| = {:.3e}",
+        (n0.masse - nr.masse).abs(),
+        (n0.max_rho_dev - nr.max_rho_dev).abs(),
+        (nuc0 - nucr).abs()
+    );
 }
 
 /// Test Étape G 3 : mismatch de dims → erreur claire (pas d'interpolation
@@ -788,7 +847,7 @@ fn snapshot_restart_layout_mismatch_is_error() {
     }
     let snap = sim.snapshot(2);
     // Solveur de layout DIFFÉRENT (bl-width différent ⇒ grilles L1 ≠).
-    let mut other = CavitySolver::new(32, 64, 6, 1.0e6, 0.71, 0.02, 42, 1, false, 3);
+    let mut other = CavitySolver::new(32, 64, 6, 1.0e6, 0.71, 0.02, 42, 1, false, 3, 1.0, None);
     let err = other.set_from_snapshot(&snap);
     assert!(err.is_err(), "mismatch de dims accepté à tort");
     let msg = err.unwrap_err();

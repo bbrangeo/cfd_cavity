@@ -190,6 +190,15 @@ pub struct CavitySolver {
     /// ν et α en unités lattice du niveau grossier (calage crate uniforme).
     pub nu_lu: f64,
     pub alpha_lu: f64,
+    /// Étape H : multiplicateur de viscosité initiale (rampe anti-overshoot,
+    /// défaut 1.0 = chemin bitwise identique — port crate uniforme).
+    pub nu_start_mult: f64,
+    /// Étape H : durée de la rampe (port crate uniforme, solver.rs l.194-195
+    /// : 10 % du nombre de zones verticales, bornée [200, 2000] pas).
+    pub spin_up_steps: usize,
+    /// Compteur de pas (rampe de viscosité, Étape H ; remis à zéro par
+    /// `set_from_snapshot`, même sémantique que le crate uniforme).
+    pub time_step: usize,
     /// Flottabilité en unités lattice du niveau L0 (§1.3).
     pub beta_eff_coarse: f64,
     /// Flottabilité du niveau L1 (beta_eff_coarse/2, §1.3 acoustic scaling).
@@ -233,6 +242,22 @@ impl CavitySolver {
     ///
     /// `levels` : 2 = configuration V2 (bandes L2 désactivées) ;
     /// 3 = escalier tanh V6 (bande L2 dx/4 imbriquée, plan §3.3 Étape F).
+    ///
+    /// Étape H (port crate uniforme, solver.rs l.108-152) :
+    /// - calage ν identique : ν = (utarget·√Pr·Lz/(c·√Ra))^(2/3), c = 1.7,
+    ///   Lz = ny0 − 1, plancher ν ≥ 0.002 (τ⁺ ≥ 0.506, tenable en TRT) ;
+    /// - `nu_override` (--nu) : bypass du calage (Option, descendre sous le
+    ///   plancher pour grilles fines type SND) — τ⁺ proche de 0.5 donne un
+    ///   WARNING sur l'octree (pas d'assert, contrairement au crate uniforme :
+    ///   l'utilisateur a choisi explicitement de descendre sous le plancher) ;
+    /// - `nu_start_mult` (--nu-start-mult) : rampe exponentielle de la
+    ///   viscosité initiale vers ν sur `spin_up_steps` pas (port bitwise de
+    ///   `ramp_nu_alpha`, solver.rs l.390-410) ; défaut 1.0 = chemin bitwise
+    ///   identique (ν_eff = ν exactement à chaque pas).
+    ///
+    /// ⚠️ L'assertion dure τ⁺ ≥ 0.506 du crate uniforme (chemin calage) est
+    /// un WARNING ici (plan §1.3 : le plancher ν ≥ 0.002 reste tenable en TRT
+    /// Λ = 3/16, et un panic tuerait une run longue).
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         nx0: usize,
@@ -245,6 +270,8 @@ impl CavitySolver {
         jobs: usize,
         odd_exact: bool,
         levels: usize,
+        nu_start_mult: f64,
+        nu_override: Option<f64>,
     ) -> Self {
         assert!(bl_width >= 2, "largeur de BL fine >= 2 cellules grossieres requise");
         assert!(2 * bl_width < nx0, "les 2 blocs fins doivent laisser un noyau grossier");
@@ -256,7 +283,27 @@ impl CavitySolver {
         // --- Calage ν/α (crate uniforme, Lz en unités grossières) ---
         let _ = UTARGET; // documenté : utarget est le paramètre de calage
         let lz = (ny0 - 1) as f64;
-        let nu = ((utarget * pr.sqrt() * lz / (C_SCALE * ra.sqrt())).powf(2.0 / 3.0)).max(0.002);
+        // Étape H : calage crate uniforme (solver.rs l.118-127) —
+        // ν = (utarget·√Pr·Lz/(c·√Ra))^(2/3), c = C_SCALE = 1.7 ; plancher
+        // ν ≥ 0.002 (τ⁺ ≥ 0.506, tenable en TRT Λ = 3/16) ; --nu bypass.
+        let nu_cal = (utarget * pr.sqrt() * lz / (C_SCALE * ra.sqrt())).powf(2.0 / 3.0);
+        let nu = match nu_override {
+            Some(n) => {
+                // ν forcé : garde API directe (la validation CLI a déjà
+                // filtré) + WARNING si τ+ proche de 0.5 (pas d'assert dur :
+                // l'utilisateur a explicitement choisi de descendre sous le
+                // plancher TRT).
+                assert!(n > 0.0 && n.is_finite(), "--nu doit être > 0 et fini");
+                if 0.5 + 3.0 * n <= 0.5005 {
+                    eprintln!(
+                        "WARNING : --nu {n} trop bas : tau+ = {:.5} proche de 0.5 (risque d'instabilite TRT)",
+                        0.5 + 3.0 * n
+                    );
+                }
+                n
+            }
+            None => nu_cal.max(0.002), // τ⁺ ≥ 0.506 (stabilité TRT)
+        };
         let alpha = nu / pr;
         let beta_eff_coarse = ra * nu * alpha / lz.powi(3);
 
@@ -268,7 +315,7 @@ impl CavitySolver {
         let tau_plus_min = [tau_coarse.tau_plus, tau_fine.tau_plus, tau_sub.tau_plus];
         if let Some(tp) = tau_plus_min.iter().copied().find(|&t| t <= 0.506) {
             eprintln!(
-                "WARNING : tau+ = {tp:.5} <= 0.506 au niveau le plus fin (plancher §1.3, risque d'instabilite TRT)"
+                "WARNING : tau+ = {tp:.5} <= 0.506 au niveau le plus fin (plancher §1.3, risque d'instabilite TRT) : augmente --utarget ou reduis la grille"
             );
         }
 
@@ -372,6 +419,11 @@ impl CavitySolver {
             levels,
             nu_lu: nu,
             alpha_lu: alpha,
+            // Étape H : rampe de viscosité (port crate uniforme) — durée 10 %
+            // des zones verticales bornée [200, 2000] pas (solver.rs l.194-195).
+            nu_start_mult: nu_start_mult.max(1.0),
+            spin_up_steps: ((ny0 / 10).max(200)).min(2000),
+            time_step: 0,
             beta_eff_coarse,
             beta_eff_fine: 0.5 * beta_eff_coarse,
             fy_coarse: vec![0.0; nx0 * ny0],
@@ -502,6 +554,24 @@ impl CavitySolver {
         }
     }
 
+    /// Rampe anti-overshoot de viscosité/diffusivité (Étape H — port bitwise
+    /// du `ramp_nu_alpha` du crate uniforme, solver.rs l.390-410) : ν effectif
+    /// élevé au départ (×nu_start_mult), décroissant exponentiellement vers ν
+    /// moléculaire sur `spin_up_steps` pas ; α suit la même rampe. Défaut
+    /// nu_start_mult = 1.0 : ν_eff = ν EXACTEMENT (powf(ν/ν) = 1 bitwise),
+    /// chemin identique aux runs existantes.
+    fn ramp_nu_alpha(&self, step: usize) -> (f64, f64) {
+        if step >= self.spin_up_steps || self.nu_start_mult == 1.0 {
+            return (self.nu_lu, self.alpha_lu);
+        }
+        let x = step as f64 / self.spin_up_steps as f64; // 0 → 1
+        let nu_start = self.nu_lu * self.nu_start_mult;
+        let nu_eff = nu_start * (self.nu_lu / nu_start).powf(x);
+        let alpha_start = self.alpha_lu * self.nu_start_mult;
+        let alpha_eff = alpha_start * (self.alpha_lu / alpha_start).powf(x);
+        (nu_eff, alpha_eff)
+    }
+
     /// Un pas grossier complet de cavité (Étape B, plan §2.2 + §3.3) :
     /// 1. grossier : collide (force Guo, domaine complet) → stream → CL
     ///    thermiques → update_macroscopic_guo → no-slip ;
@@ -530,6 +600,16 @@ impl CavitySolver {
     /// ξ pour être exact à Ra=1e10 ; l'approximation est acceptable ici car
     /// ν_t/ν ≪ 1 dans les zones d'interface. Itération ultérieure.
     pub fn step_cavity(&mut self) {
+        // --- Étape H : τ effectifs avec rampe de viscosité (port crate
+        // uniforme `ramp_nu_alpha`) — L0, L1 = 2·ν_eff, L2 = 4·ν_eff. En
+        // défaut (nu_start_mult = 1.0), ν_eff = ν bitwise ⇒ τ identiques aux
+        // τ précalculés (chemin inchangé). Incrément du compteur à la FIN du
+        // pas (la rampe du pas s lit l'état AVANT incrément). ---
+        let (nu_eff, alpha_eff) = self.ramp_nu_alpha(self.time_step);
+        let tau_coarse = RelaxTimes::from_nu_alpha(nu_eff, alpha_eff);
+        let tau_fine = RelaxTimes::from_nu_alpha(2.0 * nu_eff, 2.0 * alpha_eff);
+        let tau_sub_eff = RelaxTimes::from_nu_alpha(4.0 * nu_eff, 4.0 * alpha_eff);
+
         // --- Étape D : précalcul SGS dynamique L0 (ν_lu, τ moléculaire
         // effectif = 0.5 + 3·ν_lu) AVANT la collision L0. Tout est en
         // unités lattice LOCALES du niveau (Δx = 1, §1.4). ---
@@ -562,7 +642,7 @@ impl CavitySolver {
         let jobs = self.jobs;
         collide_cavity(
             &mut self.coarse,
-            &self.tau_coarse,
+            &tau_coarse,
             beta_c,
             &mut self.fy_coarse,
             false,
@@ -588,7 +668,7 @@ impl CavitySolver {
         // L2 imbriquée (V6, `--levels 3`) : L1 sp1 → couplage B frais →
         // 2 sous-pas L2 (dt_L2 = dt_L1/2) → restriction L2→L1 → L1 sp2 →
         // restriction L1→L0 ---
-        let tau_fine = self.tau_fine;
+        // Étape H : τ rampe (2·ν_eff, 4·ν_eff) au lieu des τ fixes.
         let beta_f = self.beta_eff_fine;
         let beta_sub = 0.25 * self.beta_eff_coarse; // §1.3 : /2 par niveau
         // Étape D : τ moléculaires effectifs des niveaux fins (2ν, 4ν).
@@ -644,7 +724,7 @@ impl CavitySolver {
                 // l'état L1 post-sous-pas 1 (Lagrava, injection fraîche).
                 let xi_down = sub.xi_down;
                 coarse_to_fine(&sub.grid, &block.fine, &mut sub.lvl, &xi_down);
-                let tau_sub = sub.tau;
+                let tau_sub = tau_sub_eff;
                 for sp in 0..2 {
                     // --- Étape D : précalcul SGS L2 (4ν) AVANT CHAQUE
                     // sous-pas L2 (état instantané du niveau L2) ---
@@ -753,6 +833,10 @@ impl CavitySolver {
             .collect();
         let coarse = &mut self.coarse;
         refresh_moments_nodes(coarse, &idxs);
+
+        // --- Étape H : incrément du compteur de pas (rampe de viscosité) —
+        // à la FIN du pas, après toutes les collisions. ---
+        self.time_step += 1;
     }
 
     /// Monitoring bruit acoustique d'un pas (LA porte V2, plan §3.1) :
@@ -969,6 +1053,10 @@ impl CavitySolver {
                 enforce_wall_velocity_block(&mut sub.lvl, sub.hot_wall, sub.cold_wall);
             }
         }
+        // Étape H : remise à zéro du compteur de pas (même sémantique que le
+        // crate uniforme `init_from_fields`) — la continuation depuis un
+        // champ établi ne rejoue PAS la rampe de viscosité.
+        self.time_step = 0;
         Ok(())
     }
 }
