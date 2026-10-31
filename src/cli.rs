@@ -74,7 +74,7 @@ impl Default for Args {
             steps: 200_000,
             sample_start: 100_000,
             sample_every: 100,
-            out: String::from("output/ra1e6"),
+            out: String::from("output/runs_uniforme/ra1e6"),
             utarget: 0.02,
             seed: 42,
             progress_every: 1000,
@@ -105,7 +105,7 @@ Options (clé=valeur) :
   --steps <usize>         pas de temps                  [défaut: 200000]
   --sample-start <usize>  début du moyennage            [défaut: 100000]
   --sample-every <usize>  stride de moyennage           [défaut: 100]
-  --out <path>            répertoire de sortie          [défaut: output/ra1e6]
+  --out <path>            répertoire de sortie          [défaut: output/runs_uniforme/ra1e6]
   --utarget <f64>         u_max cible (unités réseau)   [défaut: 0.02]
   --seed <u64>            graine RNG                    [défaut: 42]
   --progress-every <usize> cadence d'affichage          [défaut: 1000]
