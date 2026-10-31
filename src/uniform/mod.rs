@@ -8,6 +8,7 @@
 //! `snapshot.rs`, `tests.rs`), déplacé dans ce module derrière le flag
 //! `--mode uniform` — par symétrie avec `src/octree/`.
 
+pub mod gpu;
 pub mod post;
 pub mod rng;
 pub mod snapshot;

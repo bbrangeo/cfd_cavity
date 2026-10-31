@@ -14,11 +14,22 @@ pub enum Mode {
     Octree,
 }
 
+/// Backend de calcul sélectionné par `--backend` (mode uniform uniquement).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backend {
+    /// CPU rayon (défaut, référence bitwise).
+    Cpu,
+    /// GPU wgpu (Étape A, porte G1 — solveur uniforme en f32).
+    Gpu,
+}
+
 /// Paramètres de la simulation, parsés depuis `std::env::args`.
 #[derive(Debug, Clone)]
 pub struct Args {
     /// Mode de solveur (--mode uniform|octree, défaut : uniform).
     pub mode: Mode,
+    /// Backend de calcul (--backend cpu|gpu, défaut : cpu, uniform uniquement).
+    pub backend: Backend,
     // --- Champs uniformes (ignorés en mode octree) ---
     /// Nœuds en x (largeur de la cavité).
     pub nx: usize,
@@ -95,6 +106,7 @@ impl Default for Args {
     fn default() -> Self {
         Self {
             mode: Mode::Uniform,
+            backend: Backend::Cpu,
             nx: 64,
             ny: 256,
             ra: 1.0e6,
@@ -134,6 +146,11 @@ Usage: cavity_les [OPTIONS]
 
 Mode de solveur :
   --mode <uniform|octree> solveur uniforme (défaut) ou octree multi-niveaux
+
+Backend de calcul (mode --mode uniform uniquement) :
+  --backend <cpu|gpu>     CPU rayon (défaut, référence bitwise) ou GPU wgpu
+                          (Étape A, porte G1 — pas de temps uniforme en f32,
+                          critère : écart Nuc ≤ 1 % vs CPU)
 
 Options uniformes (mode --mode uniform) :
   --nx <usize>            largeur de la grille          [défaut: 64]
@@ -241,6 +258,15 @@ pub fn parse_args() -> Result<Args, String> {
                     ))
                 }
             },
+            "backend" => match value.to_lowercase().as_str() {
+                "cpu" => args.backend = Backend::Cpu,
+                "gpu" => args.backend = Backend::Gpu,
+                other => {
+                    return Err(format!(
+                        "--backend : 'cpu' ou 'gpu' attendu, lu '{other}'"
+                    ))
+                }
+            },
             "nx" => args.nx = value.parse().map_err(|_| format!("--nx : entier attendu, lu '{value}'"))?,
             "ny" => args.ny = value.parse().map_err(|_| format!("--ny : entier attendu, lu '{value}'"))?,
             "ra" => args.ra = value.parse().map_err(|_| format!("--ra : flottant attendu, lu '{value}'"))?,
@@ -333,6 +359,20 @@ pub fn parse_args() -> Result<Args, String> {
 
     if args.nx < 8 || args.ny < 8 {
         return Err("nx et ny doivent être ≥ 8".into());
+    }
+    // Backend GPU : implémenté pour le solveur uniforme uniquement (Étape A) —
+    // erreur claire en mode octree plutôt qu'un fallback silencieux.
+    if args.backend == Backend::Gpu && args.mode == Mode::Octree {
+        return Err(
+            "--backend gpu : non supporté en mode octree (Étape A = solveur uniforme uniquement) ; utilisez --backend cpu".into(),
+        );
+    }
+    // Backend GPU : le noyau implémente Smagorinsky Cs fixe (chemin OFF) —
+    // le chemin dynamique (§2.3.5) n'est pas porté, erreur claire.
+    if args.backend == Backend::Gpu && args.dynamic_smag {
+        return Err(
+            "--backend gpu : incompatible avec --dynamic-smag (seul Smagorinsky Cs fixe est porté côté GPU)".into(),
+        );
     }
     if args.ny <= args.nx {
         return Err("cavité haute : ny doit être > nx (Az ≈ 4)".into());

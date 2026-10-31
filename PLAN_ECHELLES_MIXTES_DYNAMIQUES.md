@@ -178,6 +178,13 @@ Le modèle mixte interpole entre Smagorinsky (exposant α) et une forme en qsm/�
 | dyn_a4 (α-mult 4) | 52.66 | 0.91 | −4.6 % | −47.5 % |
 | dyn_a25 (α-mult 2.5) | 59.83 | 0.36 | +8.4 % | −40.3 % |
 
+> **Campagne de suivi (décision 2026-10-31)** : refaire le dynSmag sur
+> **256×1024, Ra=1e10, sur GPU** après validation du backend (plan GPU §G5,
+> section « campagne cible de thèse »). La grille 256×1024 donne déjà
+> Nuc 101.19 (fixe, −0.5 % vs Trias) — si le dynamique y retrouve Nuc ≈ 100
+> avec ν_sm/ν ∈ [0.48, 0.54], le claim est complété : l'écart −40/−47 % était
+> une limite de résolution, le modèle dynamique est correct sur grille résolue.
+
 - Hiérarchie **a4 < fixe < a25** cohérente avec le plancher ν_t ≥ 2.33ν
   (ν_t saturé à 1.167e-3 = 2.33·ν) : α-mult 2.5 amortit moins que le fixe,
   α-mult 4 amortit plus — plus on s'approche du plancher, plus Nuc monte.

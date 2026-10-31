@@ -1,7 +1,12 @@
-# Plan de développement — Backend GPU wgpu (`--gpu`) pour cavity LES
+# Plan de développement — Backend GPU wgpu (`--backend gpu`) pour cavity LES
 
-> Statut : PLAN (non implémenté). Branche `dev-gpu`. Le code CPU actuel reste la
-> référence validée — le backend GPU est une **extension**, jamais un remplacement.
+> Statut : **Étape A en cours** (2026-10-31). Branche `dev-gpu` (recréée depuis
+> `master` `1f2fb5c` — l'ancienne branche, sans commits propres, a été
+> supprimée). Le code CPU actuel reste la référence validée — le backend GPU
+> est une **extension** (`--backend cpu|gpu`, défaut cpu), jamais un
+> remplacement. Le mode GPU cible le **solveur uniforme** (`src/uniform/`) ;
+> l'octree est hors scope GPU (mur β de compressibilité le plafonne à
+> Ra ≈ 3-4e8, cf. PLAN_OCTREE_REFINEMENT.md §6).
 
 ## 0. Objectif et ordre de grandeur du gain
 
@@ -51,13 +56,39 @@ de la précision sur le non-équilibre.
 
 ## 4. Chemin d'évidence (portes, comme le plan octree)
 
-| # | Claim | Évidence minimale |
-|---|---|---|
-| G1 | Le kernel GPU reproduit le CPU (Ra=1e6) | Nuc écart ≤ 1 %, champs visuellement identiques, w̄ max |
-| G2 | La précision f32+offset suffit | idem à Ra=1e8 (f^neq plus grand) — écarts ≤ 2 % |
-| G3 | Le gain est réel | MLUPS mesuré sur 64×256 et 256×1024 : ≥ 10× le CPU (32 MLUPS) |
-| G4 | Le dynamique survit au GPU | smoke --dynamic-smag Ra=1e6 : κ_dyn ∈ [0, 0.04], pas de NaN |
-| G5 | Ra=1e10 complet | Nuc vs CPU (55.20 fixe / 101.19 256×1024) à tolérance, run < 1 h |
+| # | Claim | Évidence minimale | Statut |
+|---|---|---|---|
+| G1 | Le kernel GPU reproduit le CPU (Ra=1e6) | Nuc écart ≤ 1 %, champs visuellement identiques, w̄ max | Étape A en cours |
+| G2 | La précision f32+offset suffit | idem à Ra=1e8 (f^neq plus grand) — écarts ≤ 2 % | — |
+| G3 | Le gain est réel | MLUPS mesuré sur 64×256 et 256×1024 : ≥ 10× le CPU (32 MLUPS) | — |
+| G4 | Le dynamique survit au GPU | smoke --dynamic-smag Ra=1e6 : κ_dyn ∈ [0, 0.04], pas de NaN | — |
+| G5 | Ra=1e10 complet | Nuc vs CPU (55.20 fixe / 101.19 256×1024) à tolérance, run < 1 h | — |
+
+### G5 = campagne cible de thèse (décision 2026-10-31)
+
+Le run de validation G5 **est** la campagne levier contre l'écart −40/−47 %
+(§5.1 du plan échelles mixtes) : refaire le **dynSmag sur 256×1024, Ra=1e10,
+sur GPU** une fois le backend validé. Config cible :
+
+```bash
+# 1. Référence GPU (fixe) — doit reproduire Nuc ≈ 101.19 (CPU, Trias 100.68)
+cavity_les --mode uniform --backend gpu --nx 256 --ny 1024 --ra 1e10 \
+    --cs 0.1 --utarget 0.002 --steps 2000000 --restart <snapshot 6.4e8 ou 1e10 fixe> \
+    --out output/gpu_ra1e10_fixe
+
+# 2. Campagne dynamique (levier 1 contre l'écart) — même grille, --dynamic-smag
+cavity_les --mode uniform --backend gpu --nx 256 --ny 1024 --ra 1e10 \
+    --dynamic-smag --smag-alpha 0.5 --utarget 0.002 --steps 2000000 \
+    --out output/gpu_ra1e10_dyn
+```
+
+Critères de succès :
+- fixe GPU : Nuc ≈ 100-101 (± tolérance f32, porte G2/G5) — cohérence CPU
+- dyn GPU : Nuc ≈ 100 ± σ raisonnable + ν_sm/ν ∈ [0.48, 0.54] (gamme C2D2/C2D3,
+  cf. §3) → **claim complété : l'écart −40/−47 % sur 96×384 était une limite
+  de résolution ; le modèle dynamique est correct sur grille résolue**
+- run < 1 h (vs ~3 h CPU par config) → campagne complète (fixe + a4 + a25)
+  abordable en une session
 
 ## 5. Ordre de développement
 

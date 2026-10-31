@@ -8,10 +8,11 @@ mod cli;
 mod octree;
 mod uniform;
 
-use cli::{Args, Mode};
+use cli::{Args, Backend, Mode};
 use std::path::Path;
 use std::time::Instant;
 
+use uniform::gpu::GpuSolver;
 use uniform::post::{self, TimeAverager};
 use uniform::snapshot;
 use uniform::solver::{self, CavitySolver};
@@ -57,6 +58,9 @@ fn run_uniform(args: Args) {
         args.pr_t,
         args.jobs
     );
+    if args.backend == Backend::Gpu {
+        println!("Backend : GPU wgpu (Étape A, porte G1 — pas de temps uniforme en f32)");
+    }
 
     // Pool rayon configuré AVANT toute boucle parallèle (--jobs N).
     if args.jobs > 1 {
@@ -127,6 +131,21 @@ fn run_uniform(args: Args) {
         sim.init_from_fields(&rho_i, &ux_i, &uy_i, &t_i);
     }
 
+    // --- Backend GPU (Étape A, porte G1) : init après le --restart éventuel
+    // (les populations partent des buffers du solveur CPU). Erreur claire si
+    // aucun adaptateur disponible — pas de fallback silencieux vers le CPU.
+    let mut gpu: Option<GpuSolver> = if args.backend == Backend::Gpu {
+        Some(GpuSolver::from_solver(&sim).unwrap_or_else(|e| {
+            eprintln!("Erreur : {e}");
+            std::process::exit(7);
+        }))
+    } else {
+        None
+    };
+    if let Some(ref g) = gpu {
+        println!("Backend GPU initialisé : {}", g.adapter_name());
+    }
+
     println!(
         "Unités réseau : nu = {:.6} | alpha = {:.6} | tau = {:.4} | tau_t = {:.4} | beta_eff = {:.4e}",
         sim.nu, sim.alpha, sim.lbm.tau, sim.lbm.tau_t, sim.beta_eff
@@ -162,7 +181,31 @@ fn run_uniform(args: Args) {
     };
 
     for step in 0..args.steps {
-        sim.step();
+        // Backend GPU : 3 dispatches (collide → stream → macroscopic) puis
+        // réinjection du macroscopique/ν_t dans les champs du solveur CPU —
+        // le pas CPU (`sim.step()`) n'est PAS exécuté, seuls les champs sont
+        // mis à jour (post.rs, TimeAverager et snapshots inchangés).
+        //
+        // Le readback GPU→CPU (latence non négligeable) n'est effectué que
+        // les pas où les champs sont consommés : diagnostics (progress-every),
+        // moyennage (sample-every), export snapshot (snapshot-every).
+        let gpu = gpu.as_mut();
+        if let Some(g) = gpu {
+            g.step(&sim);
+            let need_sync = step % args.progress_every == 0
+                || step + 1 == args.steps
+                || (step >= args.sample_start
+                    && (step - args.sample_start) % args.sample_every == 0)
+                || (args.snapshot_every > 0 && (step + 1) % args.snapshot_every == 0);
+            if need_sync {
+                if let Err(e) = g.sync_into(&mut sim) {
+                    eprintln!("Erreur de lecture GPU au pas {step} : {e}");
+                    std::process::exit(7);
+                }
+            }
+        } else {
+            sim.step();
+        }
 
         // Diagnostic de stabilité toutes les progress-every itérations
         if step % args.progress_every == 0 || step + 1 == args.steps {
@@ -302,9 +345,10 @@ fn run_uniform(args: Args) {
 
     let elapsed = start.elapsed();
     println!(
-        "Simulation terminée en {:.1} s ({:.1}k pas/s)",
+        "Simulation terminée en {:.1} s ({:.1}k pas/s) | MLUPS = {:.1}",
         elapsed.as_secs_f64(),
-        args.steps as f64 / elapsed.as_secs_f64() / 1000.0
+        args.steps as f64 / elapsed.as_secs_f64() / 1000.0,
+        args.steps as f64 * (args.nx * args.ny) as f64 / elapsed.as_secs_f64() / 1.0e6
     );
 
     if averager.n == 0 {
