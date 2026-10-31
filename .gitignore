@@ -10,3 +10,6 @@ cfd_cavity_octree/target/
 
 # logs de simulation
 *.log
+
+# Sorties de simulation (artifacts volumineux)
+output/
