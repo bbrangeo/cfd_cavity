@@ -247,6 +247,7 @@ n'a PAS levé le mur** de compressibilité du schéma D2Q9 + Guo + TRT.
 | Run | Ra | Grille équiv. | ν | τ⁺ fin | β | max ρ_dev | Résultat |
 |---|---|---|---|---|---|---|---|
 | Palier 1 | 1e8 | 64×256 | 0.0040 | 0.512 | 1.36e-4 | 2.42e-2 | STABLE 300k pas, Nuc 2.3052 |
+| Palier 1 128×512 | 1e8 | 128×512 (bl-width 8) | ≈0.004 | ≈0.512 | ≈1.4e-4 | 1.26e-2 | STABLE 300k pas, Nuc 7.3255 (verdict FAIL porte V2 à ignorer — calibré bl-width 4 ; Nuc entre grilles non comparable) |
 | Probe 2e8 | 2e8 | 64×256 | 0.0040 | 0.512 | 2.72e-4 | 6.03e-2 | STABLE 30k pas |
 | Probe 3e8 | 3e8 | 64×256 | 0.0040 | 0.512 | 4.08e-4 | 9.63e-2 | STABLE 30k pas (à la limite : max_u 0.088, ρ_dev oscillant) |
 | Probe 4e8 | 4e8 | 64×256 | 0.0040 | 0.512 | 5.43e-4 | 1.30e-1 | AVORT garde-fou Ma (max_u 0.112 > 0.10, pas 5k) |
