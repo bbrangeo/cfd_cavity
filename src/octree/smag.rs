@@ -24,8 +24,8 @@
 use oxiphysics_lbm::lattice::{D2Q9_VELOCITIES, CS2};
 use oxiphysics_lbm::thermal_lbm::feq;
 
-use crate::cavity::DELTA_T;
-use crate::lbm::LbmLevel;
+use crate::octree::cavity::DELTA_T;
+use crate::octree::lbm::LbmLevel;
 
 /// Borne supérieure du coefficient dynamique C^ν_dyn / C^κ_dyn (clamp [0, 0.04],
 /// comme la crate de référence oxiphysics-lbm : Cs²_max = 0.2²) — copie crate

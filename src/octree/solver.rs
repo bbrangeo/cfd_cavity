@@ -36,20 +36,20 @@
 //! transferts d'interface isolés (pas unique, pas de subcycling) ; la
 //! structure 2 sous-pas est néanmoins en place ici pour l'Étape B.
 
-use crate::cavity::{
+use crate::octree::cavity::{
     apply_thermal_boundary_conditions, apply_thermal_boundary_conditions_block,
     check_finite_levels, collide_cavity, enforce_wall_velocity, enforce_wall_velocity_block,
     max_u, stream_cavity, stream_cavity_block, update_macroscopic_guo, C_SCALE, MAX_U_ABORT,
     UTARGET,
 };
-use crate::cavity::{NoiseStats, Rng, T_COLD, T_HOT};
-use crate::grid::{bilinear_stencil, OctreeGrid};
-use crate::interface::{
+use crate::octree::cavity::{NoiseStats, Rng, T_COLD, T_HOT};
+use crate::octree::grid::{bilinear_stencil, OctreeGrid};
+use crate::octree::interface::{
     coarse_to_fine, fine_to_coarse, rescaling_factors, rescaling_factors_multilevel,
     RescalingFactors,
 };
-use crate::lbm::{LbmLevel, RelaxTimes};
-use crate::smag::compute_dynamic_sgs_level;
+use crate::octree::lbm::{LbmLevel, RelaxTimes};
+use crate::octree::smag::compute_dynamic_sgs_level;
 use oxiphysics_lbm::lattice::D2Q9_VELOCITIES;
 use oxiphysics_lbm::thermal_lbm::{feq, geq};
 
@@ -99,14 +99,14 @@ impl OctreeSolver {
     /// puis couplage des interfaces.
     pub fn step(&mut self) {
         // 1. Niveau grossier : collide + stream.
-        crate::lbm::collide(&mut self.coarse, &self.tau_coarse);
-        crate::lbm::stream(&mut self.coarse);
+        crate::octree::lbm::collide(&mut self.coarse, &self.tau_coarse);
+        crate::octree::lbm::stream(&mut self.coarse);
         self.coarse.update_macroscopic();
 
         // 2. Niveau fin : 2 sous-pas (dt_fin = dt_grossier/2).
         for _ in 0..2 {
-            crate::lbm::collide(&mut self.fine, &self.tau_fine);
-            crate::lbm::stream(&mut self.fine);
+            crate::octree::lbm::collide(&mut self.fine, &self.tau_fine);
+            crate::octree::lbm::stream(&mut self.fine);
             self.fine.update_macroscopic();
         }
 
@@ -1046,8 +1046,8 @@ impl CavitySolver {
     /// Extrait les champs macroscopiques (rho/ux/uy/temp) des niveaux dans
     /// l'ordre canonique du snapshot : coarse L0, bloc chaud L1, bloc froid
     /// L1, [sous-niveau chaud L2, sous-niveau froid L2 si levels=3].
-    pub fn level_fields(&self) -> Vec<crate::snapshot::LevelFields> {
-        let field = |lvl: &LbmLevel| crate::snapshot::LevelFields {
+    pub fn level_fields(&self) -> Vec<crate::octree::snapshot::LevelFields> {
+        let field = |lvl: &LbmLevel| crate::octree::snapshot::LevelFields {
             nx: lvl.nx,
             ny: lvl.ny,
             rho: lvl.rho.clone(),
@@ -1070,8 +1070,8 @@ impl CavitySolver {
     }
 
     /// Construit un snapshot complet (niveaux + pas) de l'état courant.
-    pub fn snapshot(&self, step: u64) -> crate::snapshot::Snapshot {
-        crate::snapshot::Snapshot {
+    pub fn snapshot(&self, step: u64) -> crate::octree::snapshot::Snapshot {
+        crate::octree::snapshot::Snapshot {
             levels: self.levels,
             step,
             grids: self.level_fields(),
@@ -1085,7 +1085,7 @@ impl CavitySolver {
     /// Reconstruit f/g depuis les équilibres (même logique que le crate
     /// uniforme), impose le no-slip sur les parois et remet le compteur de
     /// pas à zéro.
-    pub fn set_from_snapshot(&mut self, snap: &crate::snapshot::Snapshot) -> Result<(), String> {
+    pub fn set_from_snapshot(&mut self, snap: &crate::octree::snapshot::Snapshot) -> Result<(), String> {
         let n_expected = if self.levels == 2 { 3 } else { 5 };
         if snap.levels != self.levels || snap.grids.len() != n_expected {
             return Err(format!(
@@ -1122,7 +1122,7 @@ impl CavitySolver {
         // Injection des champs + reconstruction f/g = équilibres (même
         // logique que le crate uniforme `init_from_fields` : feq/geq depuis
         // les moments, puis remake macroscopique).
-        let inject = |lvl: &mut LbmLevel, g: &crate::snapshot::LevelFields| {
+        let inject = |lvl: &mut LbmLevel, g: &crate::octree::snapshot::LevelFields| {
             let n = lvl.nx * lvl.ny;
             for k in 0..n {
                 let r = g.rho[k];

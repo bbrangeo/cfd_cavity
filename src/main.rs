@@ -5,6 +5,7 @@
 //! pas de temps / CL / post-traitement maison.
 
 mod cli;
+mod octree;
 mod post;
 mod rng;
 mod snapshot;
@@ -12,16 +13,12 @@ mod solver;
 #[cfg(test)]
 mod tests;
 
+use cli::{Args, Mode};
 use std::path::Path;
 use std::time::Instant;
 
 use post::TimeAverager;
 use solver::CavitySolver;
-
-/// Garde-fou de stabilité : abort si max_u dépasse cette valeur.
-/// Ma_local = max_u·√3 ≈ 0.17 à la limite — marge ×3 sous les divergences
-/// observées (max_u ≈ 0.34, Ma_local ≈ 0.58 → NaN).
-const MAX_U_ABORT: f64 = 0.10;
 
 fn main() {
     let args = match cli::parse_args() {
@@ -35,6 +32,22 @@ fn main() {
             std::process::exit(1);
         }
     };
+
+    // Dispatch unifié des deux solveurs (ancien binaire cfd_cavity_octree
+    // fusionné derrière --mode octree).
+    match args.mode {
+        Mode::Uniform => run_uniform(args),
+        Mode::Octree => run_octree(args),
+    }
+}
+
+/// Solveur uniforme de référence (ancien point d'entrée unique du crate,
+/// logique inchangée).
+fn run_uniform(args: Args) {
+    /// Garde-fou de stabilité : abort si max_u dépasse cette valeur.
+    /// Ma_local = max_u·√3 ≈ 0.17 à la limite — marge ×3 sous les divergences
+    /// observées (max_u ≈ 0.34, Ma_local ≈ 0.58 → NaN).
+    const MAX_U_ABORT: f64 = 0.10;
 
     println!("=== Cavité différentiellement chauffée 2D (LBM D2Q9 + Smagorinsky) ===");
     println!(
@@ -430,6 +443,283 @@ fn main() {
         "w_max(z=0.75) = {wmax_075:.5} en x = {x_075:.5} (global) ; BL chaude : {wmax_075_hot:.5} en x = {x_075_hot:.5} (cible ≈ 0.11 en x ≈ 0.005)"
     );
     println!("y+ (paroi chaude) = {yplus:.3} | S^(1/2) = {s_half:.4}");
+    println!("Artefacts écrits dans {}", out.display());
+}
+
+/// Solveur octree multi-niveaux (ancien crate `cfd_cavity_octree`, logique
+/// inchangée — mêmes flags, mêmes défauts, mêmes sorties que l'ancien binaire).
+fn run_octree(args: Args) {
+    use octree::cavity::{nusselt_cold, nusselt_hot, nusselt_hot_fine, nusselt_hot_link0, UTARGET};
+    use octree::solver::CavitySolver as OctreeSolver;
+
+    println!("=== Cavité DHC 2D octree (Étape B, porte V2) ===");
+    println!(
+        "Grossier : {}×{} | BL fine : {} cellules grossières ×2 parois (équiv. uniforme {}×{}) | Ra = {:.3e} | Pr = {} | jobs = {} | ξ_odd = {}",
+        args.nx0,
+        args.ny0,
+        args.bl_width,
+        2 * args.bl_width,
+        args.ny0,
+        args.ra,
+        args.pr,
+        args.jobs,
+        if args.odd_exact { "exact (τ⁻)" } else { "1/2 (approx.)" }
+    );
+    // Étape H : calage ν (--utarget / --nu override).
+    if let Some(n) = args.nu {
+        println!("Étape H : nu forcé = {n} (bypass calage utarget = {})", args.utarget);
+    } else if args.utarget != UTARGET {
+        println!("Étape H : calage ν via utarget = {}", args.utarget);
+    }
+    if args.nu_start_mult > 1.0 {
+        // Étape H : rampe exponentielle (τ_ramp ≈ 1000 pas, terminée à
+        // ~5000 pas) + filet P3 : rampe beta linéaire sur spin_up_steps =
+        // max(2000, ny0/10) pas.
+        let spin_up = (args.ny0 / 10).max(2000);
+        println!(
+            "Étape H : rampe de viscosité exponentielle nu-start-mult = {} (tau_ramp = 1000 pas, terminée ~5000 pas) + rampe beta linéaire sur {} pas (spin-up)",
+            args.nu_start_mult, spin_up
+        );
+        // Contrainte 3 : la rampe ν (≈ 5000 pas) doit être terminée bien
+        // avant la fenêtre de moyennage.
+        if args.sample_start < 5000 {
+            eprintln!(
+                "WARNING : rampe de viscosité terminée ~5000 pas mais sample-start = {} : augmentez --sample-start (> 5000) pour ne pas moyenner pendant la rampe",
+                args.sample_start
+            );
+        }
+    }
+
+    // Pool rayon configuré avant toute boucle parallèle (--jobs N), même
+    // pattern que le solveur uniforme : cap au nombre de cœurs avec warning.
+    if args.jobs > 1 {
+        if let Err(e) = rayon::ThreadPoolBuilder::new()
+            .num_threads(args.jobs)
+            .build_global()
+        {
+            // Déjà initialisé (tests ou double appel) : ignoré silencieusement.
+            eprintln!("Note : pool rayon déjà configuré ({e})");
+        }
+    }
+
+    let mut sim = OctreeSolver::new(
+        args.nx0,
+        args.ny0,
+        args.bl_width,
+        args.ra,
+        args.pr,
+        args.utarget,
+        args.seed,
+        args.jobs,
+        args.odd_exact,
+        args.levels,
+        args.nu_start_mult,
+        args.nu,
+    );
+    // Étape D : modèle d'échelles mixtes dynamiques (porte V5) — setter du
+    // solveur, même sémantique que le solveur uniforme.
+    sim.set_dynamic_sgs(args.dynamic_smag, args.smag_alpha, args.nu_sm_min, args.eta_test);
+    if args.dynamic_smag {
+        println!(
+            "LES dynamique (Étape D) : alpha_mixte = {} | nu_sm_min = {} | eta_test = {}",
+            args.smag_alpha, args.nu_sm_min, args.eta_test
+        );
+    }
+
+    // --- Étape G : option --restart (initialisation depuis un snapshot
+    // binaire multi-niveaux, ancien main.rs l.375-390) ---
+    if let Some(ref snap_path) = args.restart {
+        let snap = octree::snapshot::read_snapshot(Path::new(snap_path))
+            .unwrap_or_else(|e| {
+                eprintln!("Erreur de lecture du snapshot {snap_path} : {e}");
+                std::process::exit(6);
+            });
+        println!(
+            "Restart depuis {snap_path} : snapshot levels={} ({} grilles), pas {} — injection des champs du solveur octree",
+            snap.levels,
+            snap.grids.len(),
+            snap.step
+        );
+        if let Err(e) = sim.set_from_snapshot(&snap) {
+            eprintln!("Erreur de restart : {e}");
+            std::process::exit(6);
+        }
+    }
+
+    println!(
+        "Unités réseau : nu = {:.6} | alpha = {:.6} | tau+ = {:.4}/{:.4}{} | beta_eff = {:.4e}/{:.4e}{} | {} niveaux | {} nœuds (grossier {} + fins {})",
+        sim.nu_lu,
+        sim.alpha_lu,
+        sim.tau_coarse.tau_plus,
+        sim.tau_fine.tau_plus,
+        if args.levels == 3 {
+            format!("/{:.4}", sim.blocks[0].sub.as_ref().unwrap().tau.tau_plus)
+        } else {
+            String::new()
+        },
+        sim.beta_eff_coarse,
+        sim.beta_eff_fine,
+        if args.levels == 3 {
+            format!("/{:.4e}", 0.25 * sim.beta_eff_coarse)
+        } else {
+            String::new()
+        },
+        args.levels,
+        sim.n_nodes_total(),
+        args.nx0 * args.ny0,
+        sim.n_nodes_total() - args.nx0 * args.ny0
+    );
+    println!(
+        "Ra vérifié depuis unités réseau (grossier) : {:.4e} (cible {:.4e})",
+        sim.beta_eff_coarse * ((sim.ny0 - 1) as f64).powi(3) / (sim.nu_lu * sim.alpha_lu),
+        args.ra
+    );
+
+    let out = Path::new(&args.out);
+    if let Err(e) = std::fs::create_dir_all(out) {
+        eprintln!("Impossible de créer {} : {e}", out.display());
+        std::process::exit(4);
+    }
+
+    let mut log_lines: Vec<String> = Vec::new();
+    // Moyennage Nuc : somme + n d'échantillons (fenêtre sample_start→fin).
+    let mut nuc_sum = 0.0f64;
+    let mut nuf_sum = 0.0f64;
+    let mut nuc_n = 0usize;
+    // Estimateur like-for-like (1ère liaison ix=0–1, artefact mur — même
+    // estimateur que la run uniforme de référence Nuc=1.3660).
+    let mut nucl0_sum = 0.0f64;
+    // Diagnostic Nu_fin : moyenné sur le bloc fin de paroi chaude (même
+    // fenêtre), pour distinguer vrai champ vs corruption d'estimateur 2×2.
+    let mut nufine_sum = 0.0f64;
+    let hot_block_idx = sim.blocks.iter().position(|b| b.hot_wall).expect("bloc paroi chaude");
+    let lx_coarse = (args.nx0 - 1) as f64;
+    let mut noise_max = 0.0f64;
+    let mut noise_iface_max = 0.0f64;
+    let start = Instant::now();
+
+    // --- Étape G : export périodique (--snapshot-every N, 0 = désactivé) ---
+    let snap_out_path = if args.snapshot_every > 0 {
+        Some(out.join("snapshot.bin"))
+    } else {
+        None
+    };
+
+    for step in 0..args.steps {
+        sim.step_cavity();
+
+        // Moyennage Nuc après sample_start (fenêtre sample-start→fin).
+        // Diagnostic Nu_fin : moyenné sur le bloc fin de paroi chaude (même
+        // fenêtre), pour distinguer vrai champ vs corruption d'estimateur.
+        if step >= args.sample_start && (step - args.sample_start) % args.sample_every == 0 {
+            nuc_sum += nusselt_hot(&sim.coarse);
+            nuf_sum += nusselt_cold(&sim.coarse);
+            nucl0_sum += nusselt_hot_link0(&sim.coarse);
+            nufine_sum += nusselt_hot_fine(&sim.blocks[hot_block_idx].fine, lx_coarse);
+            nuc_n += 1;
+        }
+
+        // Diagnostic + garde-fous toutes les progress-every itérations.
+        if step % args.progress_every == 0 || step + 1 == args.steps {
+            let noise = sim.noise_stats();
+            noise_max = noise_max.max(noise.max_rho_dev);
+            noise_iface_max = noise_iface_max.max(noise.max_rho_dev_ifaces);
+            let nuc = nusselt_hot(&sim.coarse);
+            let nuf = nusselt_cold(&sim.coarse);
+            let nucl0 = nusselt_hot_link0(&sim.coarse);
+            let nufine = nusselt_hot_fine(&sim.blocks[hot_block_idx].fine, lx_coarse);
+            // Étape D : diagnostics LES dynamique en suffixe de ligne —
+            // ne casse pas le format existant en mode OFF.
+            let dyn_suffix = if args.dynamic_smag {
+                format!(
+                    " | cs_dyn = {:.4} | kap_dyn = {:.4} | nu_t_max = {:.3e}",
+                    sim.cs_dyn_mean, sim.kappa_dyn_mean, sim.nu_t_max
+                )
+            } else {
+                String::new()
+            };
+            let msg = format!(
+                "step {:>7} | max_rho_dev = {:.3e} | max_rho_dev_ifaces = {:.3e} | masse = {:.6} | Nuc = {:.4} | Nuc_link0 = {:.4} | Nuf = {:.4} | Nu_fin = {:.4} | max_u = {:.5}{}",
+                step, noise.max_rho_dev, noise.max_rho_dev_ifaces, noise.masse, nuc, nucl0, nuf, nufine, sim.max_u_all(),
+                dyn_suffix
+            );
+            println!("{msg}");
+            log_lines.push(msg);
+
+            // Garde-fous identiques au solveur uniforme (max_u, finitude) :
+            // sortie gracieuse avec log AVANT divergence NaN.
+            if let Some(abort_msg) = sim.check_guards() {
+                eprintln!("{abort_msg}");
+                log_lines.push(abort_msg);
+                let _ = std::fs::write(out.join("progress.log"), log_lines.join("\n") + "\n");
+                std::process::exit(2);
+            }
+        }
+
+        // --- Étape G : export périodique du snapshot (écriture atomique
+        // tmp + rename) ---
+        if let Some(path) = &snap_out_path {
+            if (step + 1) % args.snapshot_every == 0 {
+                let snap = sim.snapshot(step as u64);
+                if let Err(e) = octree::snapshot::write_snapshot_atomic(path, &snap) {
+                    eprintln!("Erreur d'export du snapshot au pas {step} : {e}");
+                    std::process::exit(5);
+                }
+                println!("snapshot exporté au pas {step}");
+            }
+        }
+    }
+
+    // --- Étape G : export final du snapshot (si activé) ---
+    if let Some(path) = &snap_out_path {
+        let snap = sim.snapshot(args.steps as u64);
+        if let Err(e) = octree::snapshot::write_snapshot_atomic(path, &snap) {
+            eprintln!("Erreur d'export du snapshot final : {e}");
+            std::process::exit(5);
+        }
+        println!("snapshot final exporté au pas {}", args.steps - 1);
+    }
+
+    let elapsed = start.elapsed();
+    println!(
+        "Simulation terminée en {:.1} s ({:.1}k pas/s)",
+        elapsed.as_secs_f64(),
+        args.steps as f64 / elapsed.as_secs_f64() / 1000.0
+    );
+
+    if nuc_n == 0 {
+        eprintln!("Aucun échantillon moyenné : sample_start ≥ steps ?");
+        std::process::exit(3);
+    }
+    let nuc_mean = nuc_sum / nuc_n as f64;
+    let nuf_mean = nuf_sum / nuc_n as f64;
+    let nucl0_mean = nucl0_sum / nuc_n as f64;
+    let nufine_mean = nufine_sum / nuc_n as f64;
+
+    // --- Références et verdict porte V2 ---
+    // Like-for-like (2ᵉ liaison, estimateur Nuc standard) : baseline
+    // uniforme Ra=1e6 = 2.3585 (output/runs_octree/ra1e6_full, grad 2ᵉ liaison).
+    // 1ʳᵉ liaison (estimateur nusselt_hot_link0, artefact mur) : 1.3660.
+    let nuc_ref = 2.3585;
+    let nucl0_ref = 1.3660;
+    let ecart_pct = ((nuc_mean - nuc_ref) / nuc_ref).abs() * 100.0;
+    let portee_v2 = ecart_pct <= 5.0;
+
+    let summary = format!(
+        "--- Bilan (moyenné sur {nuc_n} échantillons, fenêtre {}→{}) ---
+Nuc (2ᵉ liaison) = {nuc_mean:.4} | écart like-for-like vs {nuc_ref} = {ecart_pct:.1} %
+Nuc_link0 (1ʳᵉ liaison) = {nucl0_mean:.4} | Nuf = {nuf_mean:.4} | Nu_fin (bloc chaud) = {nufine_mean:.4}
+Références uniforme Ra=1e6 : 2ᵉ liaison = {nuc_ref} | 1ʳᵉ liaison = {nucl0_ref}
+Bruit acoustique (max sur la run) : max|ρ−ρ̄| = {noise_max:.3e} | interfaces = {noise_iface_max:.3e}
+PORTE V2 (écart Nuc ≤ 5 %) : {}",
+        args.sample_start,
+        args.steps,
+        if portee_v2 { "PASS" } else { "FAIL" }
+    );
+    println!("{summary}");
+    log_lines.push(summary);
+
+    let _ = std::fs::write(out.join("progress.log"), log_lines.join("\n") + "\n");
     println!("Artefacts écrits dans {}", out.display());
 }
 

@@ -28,8 +28,8 @@
 //! f_fin = feq(moments interpolés) + fneq rescalé reproduit EXACTEMENT les
 //! moments transférés (masse, momentum, température) à ε_machine près.
 
-use crate::grid::OctreeGrid;
-use crate::lbm::{LbmLevel, RelaxTimes};
+use crate::octree::grid::OctreeGrid;
+use crate::octree::lbm::{LbmLevel, RelaxTimes};
 use oxiphysics_lbm::lattice::{D2Q9_OPPOSITES, D2Q9_VELOCITIES};
 use oxiphysics_lbm::thermal_lbm::{feq, geq};
 

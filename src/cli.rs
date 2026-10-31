@@ -1,8 +1,25 @@
 //! Parsing des arguments CLI (à la main, aucune dépendance).
+//!
+//! CLI unifiée des deux solveurs : le flag `--mode uniform|octree` (défaut :
+//! uniform) sélectionne le binaire logique. Les champs spécifiques au mode
+//! octree (`--nx0`, `--ny0`, `--bl-width`, `--levels`, `--odd-exact`) sont
+//! ignorés en mode uniform et vice-versa (`--nx`, `--ny`, ...).
+
+/// Mode de solveur sélectionné par `--mode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// Solveur uniforme de référence (défaut).
+    Uniform,
+    /// Solveur octree multi-niveaux (ancien crate `cfd_cavity_octree`).
+    Octree,
+}
 
 /// Paramètres de la simulation, parsés depuis `std::env::args`.
 #[derive(Debug, Clone)]
 pub struct Args {
+    /// Mode de solveur (--mode uniform|octree, défaut : uniform).
+    pub mode: Mode,
+    // --- Champs uniformes (ignorés en mode octree) ---
     /// Nœuds en x (largeur de la cavité).
     pub nx: usize,
     /// Nœuds en y (hauteur, Az = (ny-1)/(nx-1) ≈ 4).
@@ -60,11 +77,24 @@ pub struct Args {
     pub nu_sm_min: f64,
     /// Ratio filtre test η = Δ/Δ̃ (défaut thèse : 2).
     pub eta_test: f64,
+    // --- Champs octree (ignorés en mode uniform) ---
+    /// Taille du domaine grossier (équiv. grille uniforme 2·bl_width × ny0).
+    pub nx0: usize,
+    /// Hauteur du domaine grossier.
+    pub ny0: usize,
+    /// Largeur de BL fine (cellules grossières) par paroi verticale.
+    pub bl_width: usize,
+    /// Variante rescaling ξ_odd exacte (1/2·τ⁻_fin/τ⁻_grossier, plan §1.2).
+    pub odd_exact: bool,
+    /// Nombre de niveaux : 2 = config V2 (L0+L1), 3 = escalier tanh V6
+    /// (bande L2 dx/4 imbriquée, Étape F).
+    pub levels: usize,
 }
 
 impl Default for Args {
     fn default() -> Self {
         Self {
+            mode: Mode::Uniform,
             nx: 64,
             ny: 256,
             ra: 1.0e6,
@@ -88,6 +118,13 @@ impl Default for Args {
             smag_alpha: 0.5,
             nu_sm_min: -0.1,
             eta_test: 2.0,
+            // Champs octree (grille V2, plan §3.1 : équivalente 128×512 →
+            // grossier 64×256, BL fine ×2 = 8 cellules grossières par paroi).
+            nx0: 64,
+            ny0: 256,
+            bl_width: 8,
+            odd_exact: false,
+            levels: 2,
         }
     }
 }
@@ -95,7 +132,10 @@ impl Default for Args {
 const USAGE: &str = "\
 Usage: cavity_les [OPTIONS]
 
-Options (clé=valeur) :
+Mode de solveur :
+  --mode <uniform|octree> solveur uniforme (défaut) ou octree multi-niveaux
+
+Options uniformes (mode --mode uniform) :
   --nx <usize>            largeur de la grille          [défaut: 64]
   --ny <usize>            hauteur de la grille          [défaut: 256]
   --ra <f64>              Rayleigh cible                [défaut: 1e6]
@@ -124,6 +164,20 @@ Options (clé=valeur) :
                           (0.5 = moyenne géométrique, Tab. 2.3)
   --nu-sm-min <f64>       borne νsm ≥ nu_sm_min·ν [défaut: -0.1]
   --eta-test <f64>        ratio filtre test η = Δ/Δ̃ [défaut: 2.0]
+
+Options octree (mode --mode octree, ancien crate cfd_cavity_octree) :
+  --nx0 <usize>           largeur grossière              [défaut: 64]
+  --ny0 <usize>           hauteur grossière              [défaut: 256]
+  --bl-width <usize>      largeur BL fine (cellules grossières) [défaut: 8]
+  --odd-exact             variante ξ_odd exacte ((1/2)·τ⁻_fin/τ⁻_grossier,
+                          plan §1.2/§4) ; défaut : ξ_odd = 1/2
+  --levels <usize>        niveaux : 2 = config V2, 3 = escalier tanh V6
+                          (bande L2 dx/4, Étape F)  [défaut: 2]
+
+Options communes aux deux modes :
+  --ra/--pr/--steps/--sample-start/--sample-every/--progress-every/--out/
+  --jobs/--seed/--utarget/--nu-start-mult/--nu/--restart/--snapshot-every/
+  --dynamic-smag/--smag-alpha/--nu-sm-min/--eta-test (mêmes défauts)
 ";
 
 /// Texte d'aide complet.
@@ -156,6 +210,17 @@ pub fn parse_args() -> Result<Args, String> {
             i += 1;
             continue;
         }
+        // Flag booléen SANS valeur --odd-exact (mode octree, même sémantique).
+        if key == "odd-exact" || key == "odd_exact" {
+            match inline_val {
+                Some(v) if v == "true" || v == "1" => args.odd_exact = true,
+                Some(v) if v == "false" || v == "0" => args.odd_exact = false,
+                Some(v) => return Err(format!("--odd-exact : booléen attendu, lu '{v}'")),
+                None => args.odd_exact = true, // présence = activé
+            }
+            i += 1;
+            continue;
+        }
 
         // valeur soit inline (--key=val), soit au token suivant (--key val)
         let value = match inline_val {
@@ -167,6 +232,15 @@ pub fn parse_args() -> Result<Args, String> {
         };
 
         match key.as_str() {
+            "mode" => match value.to_lowercase().as_str() {
+                "uniform" => args.mode = Mode::Uniform,
+                "octree" => args.mode = Mode::Octree,
+                other => {
+                    return Err(format!(
+                        "--mode : 'uniform' ou 'octree' attendu, lu '{other}'"
+                    ))
+                }
+            },
             "nx" => args.nx = value.parse().map_err(|_| format!("--nx : entier attendu, lu '{value}'"))?,
             "ny" => args.ny = value.parse().map_err(|_| format!("--ny : entier attendu, lu '{value}'"))?,
             "ra" => args.ra = value.parse().map_err(|_| format!("--ra : flottant attendu, lu '{value}'"))?,
@@ -244,6 +318,13 @@ pub fn parse_args() -> Result<Args, String> {
                 }
                 args.nu = Some(v)
             }
+            // --- Champs octree (mode --mode octree) ---
+            "nx0" => args.nx0 = value.parse().map_err(|_| format!("--nx0 : entier attendu, lu '{value}'"))?,
+            "ny0" => args.ny0 = value.parse().map_err(|_| format!("--ny0 : entier attendu, lu '{value}'"))?,
+            "bl-width" | "bl_width" => {
+                args.bl_width = value.parse().map_err(|_| format!("--bl-width : entier attendu, lu '{value}'"))?
+            }
+            "levels" => args.levels = value.parse().map_err(|_| format!("--levels : entier attendu, lu '{value}'"))?,
             "help" | "h" => return Err(String::from("help")),
             other => return Err(format!("option inconnue '--{other}'")),
         }
@@ -276,6 +357,28 @@ pub fn parse_args() -> Result<Args, String> {
     }
     if !(args.eta_test >= 1.0) || !args.eta_test.is_finite() {
         return Err("eta-test doit être ≥ 1 (ratio filtre test/grille)".into());
+    }
+    // Validations spécifiques au mode octree (copiées de l'ancien crate
+    // cfd_cavity_octree) — ignorées en mode uniform.
+    if args.mode == Mode::Octree {
+        if args.nx0 < 16 || args.ny0 < 16 {
+            return Err("nx0 et ny0 doivent être ≥ 16".into());
+        }
+        if args.ny0 <= args.nx0 {
+            return Err("cavité haute : ny0 doit être > nx0 (Az ≈ 4)".into());
+        }
+        if !(args.bl_width >= 2 && 2 * args.bl_width < args.nx0) {
+            return Err("bl-width doit être ≥ 2 et 2·bl-width < nx0 (noyau grossier requis)".into());
+        }
+        if !(args.levels == 2 || args.levels == 3) {
+            return Err("levels doit valoir 2 (config V2) ou 3 (escalier tanh V6)".into());
+        }
+        if args.levels == 3 && args.bl_width != 4 {
+            eprintln!(
+                "Note : escalier V6 conçu pour bl-width = 4 cellules grossières (frontières tanh §0.1) ; lu {}",
+                args.bl_width
+            );
+        }
     }
     Ok(args)
 }

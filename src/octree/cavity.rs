@@ -25,7 +25,7 @@
 //!
 //! Pas de Smagorinsky en Étape B (port --dynamic-smag : Étape D, plan §3.3).
 
-use crate::lbm::{LbmLevel, RelaxTimes};
+use crate::octree::lbm::{LbmLevel, RelaxTimes};
 use oxiphysics_lbm::lattice::{D2Q9_OPPOSITES, D2Q9_VELOCITIES, D2Q9_WEIGHTS, CS2};
 use oxiphysics_lbm::thermal_lbm::{boussinesq_force, feq, geq};
 use rayon::prelude::*;
@@ -101,7 +101,7 @@ pub fn collide_node_cavity(
         (Some(nu_t), Some(alpha_t)) => {
             let tp = 0.5 + 3.0 * (tau.tau_plus - 0.5) / 3.0
                 + 3.0 * nu_t; // = 0.5 + 3·(ν_lu + ν_t) (ν_lu = (tau.tau_plus−0.5)/3)
-            let tm = 0.5 + crate::lbm::LAMBDA_TRT / (tp - 0.5);
+            let tm = 0.5 + crate::octree::lbm::LAMBDA_TRT / (tp - 0.5);
             let tt = 0.5 + 3.0 * (tau.tau_t - 0.5) / 3.0
                 + 3.0 * alpha_t; // = 0.5 + 3·(α_lu + α_t)
             (tp, tm, tt)
@@ -367,7 +367,7 @@ pub fn stream_cavity(lvl: &mut LbmLevel, jobs: usize) {
             });
         return;
     }
-    crate::lbm::stream(lvl);
+    crate::octree::lbm::stream(lvl);
 }
 
 /// Streaming pull block-aware pour un bloc fin de cavité (Étape B).

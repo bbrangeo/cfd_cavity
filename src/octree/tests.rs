@@ -17,11 +17,11 @@
 //! collide+stream) et `fine_to_coarse` ne lit que les 2×2 nœuds fins
 //! coïncidents — les tests vérifient donc exactement ces sous-ensembles.
 
-use crate::cavity::{nusselt_cold, nusselt_hot};
-use crate::grid::OctreeGrid;
-use crate::interface::{rescale_fneq, rescale_fneq_inverse, rescaling_factors, split_odd_even};
-use crate::lbm::{RelaxTimes, LAMBDA_TRT};
-use crate::solver::{CavitySolver, OctreeSolver};
+use crate::octree::cavity::{nusselt_cold, nusselt_hot};
+use crate::octree::grid::OctreeGrid;
+use crate::octree::interface::{rescale_fneq, rescale_fneq_inverse, rescaling_factors, split_odd_even};
+use crate::octree::lbm::{RelaxTimes, LAMBDA_TRT};
+use crate::octree::solver::{CavitySolver, OctreeSolver};
 use oxiphysics_lbm::lattice::{D2Q9_VELOCITIES, D2Q9_WEIGHTS};
 use oxiphysics_lbm::thermal_lbm::{feq, geq};
 
@@ -135,7 +135,7 @@ fn expected_moments(s: &OctreeSolver, x: f64, y: f64) -> (f64, f64, f64, f64) {
 #[test]
 fn v1_interface_conserves_mass_and_momentum() {
     let mut s = init_solver_v1();
-    crate::interface::coarse_to_fine(&s.grid, &s.coarse, &mut s.fine, &s.xi);
+    crate::octree::interface::coarse_to_fine(&s.grid, &s.coarse, &mut s.fine, &s.xi);
 
     let nx1 = s.fine.nx;
     let mut err_rho = 0.0f64;
@@ -244,7 +244,7 @@ fn v1_fine_to_coarse_conserves_and_inverse() {
         }
     }
 
-    crate::interface::fine_to_coarse(&s.grid, &s.fine, &mut s.coarse, &s.xi);
+    crate::octree::interface::fine_to_coarse(&s.grid, &s.fine, &mut s.coarse, &s.xi);
 
     let mut err_rho = 0.0f64;
     let mut err_t = 0.0f64;
@@ -582,7 +582,7 @@ fn small_solver() -> CavitySolver {
 /// α = 0.5 ⇒ moyenne géométrique √(a·b) (Tab. 2.3).
 #[test]
 fn mixed_factor_alpha_half_is_geometric_mean() {
-    use crate::smag::mixed_factor;
+    use crate::octree::smag::mixed_factor;
     let (a, b) = (4.0, 9.0);
     let m = mixed_factor(a, b, 0.5);
     assert!((m - (a * b).sqrt()).abs() < 1e-12, "m = {m}");
@@ -695,8 +695,8 @@ fn dynamic_smag_xi_recomputed_from_effective_taus() {
         let tau_f = RelaxTimes::from_nu_alpha(2.0 * nu, 2.0 * alpha);
         let tau_s = RelaxTimes::from_nu_alpha(4.0 * nu, 4.0 * alpha);
         (
-            crate::interface::rescaling_factors_multilevel(&tau_c, &tau_f, 2, false),
-            crate::interface::rescaling_factors_multilevel(&tau_f, &tau_s, 2, false),
+            crate::octree::interface::rescaling_factors_multilevel(&tau_c, &tau_f, 2, false),
+            crate::octree::interface::rescaling_factors_multilevel(&tau_f, &tau_s, 2, false),
         )
     };
     let (xi_mol, xi_sub_mol) = mol_xi(1.0e6);
@@ -802,9 +802,9 @@ fn snapshot_roundtrip_levels3_identical() {
     assert_eq!(snap.levels, 3);
     assert_eq!(snap.grids.len(), 5, "5 grilles attendues en levels=3");
 
-    let bytes = crate::snapshot::encode(&snap);
-    let snap2 = crate::snapshot::decode(&bytes).expect("decode");
-    let bytes2 = crate::snapshot::encode(&snap2);
+    let bytes = crate::octree::snapshot::encode(&snap);
+    let snap2 = crate::octree::snapshot::decode(&bytes).expect("decode");
+    let bytes2 = crate::octree::snapshot::encode(&snap2);
 
     // Round-trip bit-identique.
     assert_eq!(bytes, bytes2, "encode∘decode∘encode ≠ id");
@@ -840,8 +840,8 @@ fn snapshot_restart_restores_distributions() {
         sim.step_cavity();
     }
     let snap = sim.snapshot(5);
-    let bytes = crate::snapshot::encode(&snap);
-    let loaded = crate::snapshot::decode(&bytes).expect("decode");
+    let bytes = crate::octree::snapshot::encode(&snap);
+    let loaded = crate::octree::snapshot::decode(&bytes).expect("decode");
 
     // Solveur neuf, restart depuis le snapshot chargé.
     let mut restored = small_solver_l3();
@@ -851,7 +851,7 @@ fn snapshot_restart_restores_distributions() {
 
     // Distributions restaurées == équilibres des champs exportés (f/g
     // reconstruits depuis feq/geq — même logique que le crate uniforme).
-    let check = |lvl: &crate::lbm::LbmLevel, g: &crate::snapshot::LevelFields, name: &str| {
+    let check = |lvl: &crate::octree::lbm::LbmLevel, g: &crate::octree::snapshot::LevelFields, name: &str| {
         let n = lvl.nx * lvl.ny;
         for k in 0..n {
             assert_eq!(lvl.rho[k], g.rho[k], "{name} rho (nœud {k})");
@@ -930,8 +930,8 @@ fn snapshot_restart_restores_distributions() {
     // dérivée 2ᵉ ordre à la paroi : il amplifie le transitoire de
     // reconstruction des équilibres (mesuré 3.8e-2 à 1 pas) — tolérance
     // 5e-2, toujours 2× sous le seuil O(0.1) d'un bug de mapping.
-    let nuc0 = crate::cavity::nusselt_hot(&sim.coarse);
-    let nucr = crate::cavity::nusselt_hot(&restored.coarse);
+    let nuc0 = crate::octree::cavity::nusselt_hot(&sim.coarse);
+    let nucr = crate::octree::cavity::nusselt_hot(&restored.coarse);
     assert!(
         (nuc0 - nucr).abs() < 5e-2,
         "Nuc discontinu au restart : {nuc0} vs {nucr}"
