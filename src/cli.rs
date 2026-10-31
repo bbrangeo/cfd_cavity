@@ -360,18 +360,12 @@ pub fn parse_args() -> Result<Args, String> {
     if args.nx < 8 || args.ny < 8 {
         return Err("nx et ny doivent être ≥ 8".into());
     }
-    // Backend GPU : implémenté pour le solveur uniforme uniquement (Étape A) —
-    // erreur claire en mode octree plutôt qu'un fallback silencieux.
+    // Backend GPU : le noyau GPU porte Smagorinsky Cs fixe ET le dynamic
+    // Smagorinsky (Étape D, porte G4 : kernels dyn1-dyn4 + collide_dyn,
+    // mêmes formules que `compute_dynamic_sgs`).
     if args.backend == Backend::Gpu && args.mode == Mode::Octree {
         return Err(
             "--backend gpu : non supporté en mode octree (Étape A = solveur uniforme uniquement) ; utilisez --backend cpu".into(),
-        );
-    }
-    // Backend GPU : le noyau implémente Smagorinsky Cs fixe (chemin OFF) —
-    // le chemin dynamique (§2.3.5) n'est pas porté, erreur claire.
-    if args.backend == Backend::Gpu && args.dynamic_smag {
-        return Err(
-            "--backend gpu : incompatible avec --dynamic-smag (seul Smagorinsky Cs fixe est porté côté GPU)".into(),
         );
     }
     if args.ny <= args.nx {

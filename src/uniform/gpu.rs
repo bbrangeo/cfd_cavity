@@ -29,6 +29,27 @@
 //! dans un SEUL command encoder (batch de 64 pas, flushé avant tout readback)
 //! pour amortir l'overhead CPU de soumission.
 //!
+//! Étape D (porte G4) : portage du dynamic Smagorinsky (échelles mixtes
+//! §2.3.5 thèse, `compute_dynamic_sgs` du CPU) en 3 dispatches additionnels
+//! exécutés dans le MÊME compute pass, avant la collision :
+//!
+//!   0a. `dyn1` : qsm^{1/2}, Φsm^{1/2} par nœud (Éq. 2.74) → dyn_s1.
+//!   0b. `dyn2` : S̃/|S̃| (π_neq), S̄/|S̄| (box stock), gradients, formes
+//!       mixtes interpolées (Éq. 2.73), tenseurs Germano M/L, contractions
+//!       de Lilly → dyn_s2/dyn_s3.
+//!   0c. `dyn3` : régularisation Éq. 2.62 (box num/den), coefficient de
+//!       Lilly (clamp [0, 0.04] = C_DYN_MAX), ν_t/α_t bornés (plancher TRT
+//!       + nu_sm_min) → dyn_out[k] = (ν_t, α_t, C^ν, C^κ).
+//!   1.  `collide_dyn` : réplique exacte de `collide` qui CONSOMME ν_t/α_t
+//!       de dyn_out (aucun readback — ν_t reste sur GPU sauf diagnostics).
+//!
+//! Les barrières wgpu entre dispatches d'un même pass garantissent dyn1→dyn2
+//!→dyn3→collide_dyn. Le batching d'encoders est préservé : les paramètres
+//! dynamiques (α, η, ν_mol, α_mol, nu_sm_min, ΔT, marge plancher, largeur box)
+//! sont constants au cours du run. Les diagnostics C^ν_dyn/C^κ_dyn (dyn_out.zw)
+//! sont réduits CÔTÉ CPU au readback (pas d'atomiques flottantes, réduction
+//! séquentielle déterministe).
+//!
 //! Précision (parade FluidX3D, plan §2) : les populations f sont stockées
 //! DÉCALÉES — f_i − w_i·ρ₀ (ρ₀ = 1) — pour récupérer la précision relative
 //! f32 sur le non-équilibre ; reconstruction f_i = w_i + décalage dans le
@@ -44,7 +65,10 @@ use bytemuck::Zeroable;
 use wgpu::util::DeviceExt;
 
 use crate::uniform::solver::CavitySolver;
+use crate::uniform::solver::C_DYN_MAX;
+use crate::uniform::solver::TAU_TRT_FLOOR;
 use crate::uniform::solver::{T_COLD, T_HOT};
+use crate::uniform::solver::DELTA_T;
 
 /// Paramètres uniformes du pas de temps (passés au shader via uniform buffer).
 /// Convertis en f32 à l'interface CPU (WGSL n'a pas de f64 portable).
@@ -81,13 +105,56 @@ struct GpuParams {
     _pad: u32,
 }
 
+/// Paramètres du modèle dynamique (Étape D, porte G4) — constants au cours
+/// du run (pas de rampe : ν_mol/α_mol sont les valeurs MOLÉCULAIRES cibles,
+/// même sémantique que `compute_dynamic_sgs` qui lit self.nu/self.alpha).
+/// Buffers séparés du GpuParams (qui varie pendant le spin-up) pour ne pas
+/// casser le batching d'encoders (bit-à-bit constant).
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable, PartialEq)]
+struct GpuDynParams {
+    /// Exposant α de l'interpolation mixte (0.5 = moyenne géométrique).
+    alpha_exp: f32,
+    /// Ratio filtre test η = Δ/Δ̃ (largeur box = round(max(η,1))).
+    eta_test: f32,
+    /// dtest = η·Δx (Δx = 1).
+    dtest: f32,
+    /// ΔT global = T_hot − T_cold = 1 (PAS Δ̃·T — Tab. 2.3).
+    delta_t: f32,
+    /// ν moléculaire cible (nu_sm_min·ν).
+    nu_mol: f32,
+    /// α moléculaire cible (nu_sm_min·α).
+    alpha_mol: f32,
+    /// Borne inférieure νsm ≥ nu_sm_min·ν.
+    nu_sm_min: f32,
+    /// Marge plancher TRT (TAU_TRT_FLOOR − 0.5)/3.
+    tau_floor_margin: f32,
+    /// Largeur du filtre box en nœuds (round(max(η,1))), ≥ 1.
+    box_width: u32,
+    /// Borne C_DYN_MAX = 0.04 (clamp du coefficient de Lilly).
+    c_dyn_max: f32,
+    /// Padding (taille 64 octets, alignement uniform WGSL).
+    _pad: [u32; 6],
+}
+
 /// Solveur GPU : enveloppe wgpu du pas de temps uniforme, buffers f32.
 pub struct GpuSolver {
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipe_collide: wgpu::ComputePipeline,
     pipe_stream_macro: wgpu::ComputePipeline,
+    /// Étape D (G4) : kernels du dynamic Smagorinsky (None = chemin OFF).
+    pipe_dyn1: Option<wgpu::ComputePipeline>,
+    pipe_dyn2: Option<wgpu::ComputePipeline>,
+    pipe_dyn3: Option<wgpu::ComputePipeline>,
+    pipe_dyn4: Option<wgpu::ComputePipeline>,
+    pipe_collide_dyn: Option<wgpu::ComputePipeline>,
     params_buf: wgpu::Buffer,
+    /// Uniform du modèle dynamique (constants au cours du run).
+    /// Uniforms du mode dynamique (DynParams, binding 10) — constants au
+    /// cours du run, lus uniquement via les bind groups GPU.
+    #[allow(dead_code)] // lu par les bind groups (GPU), pas par le code Rust
+    dyn_params_buf: Option<wgpu::Buffer>,
 
     /// Populations f DÉCALÉES f_i − w_i·ρ₀ (f32), layout SoA [direction][nœud]
     /// (f[i·n + k]) — buffer A.
@@ -112,16 +179,39 @@ pub struct GpuSolver {
     g_col: wgpu::Buffer,
     /// Viscosité turbulente par nœud (diagnostic + TimeAverager).
     nu_t_buf: wgpu::Buffer,
+    /// Étape D (G4) : buffers de travail du dynamic Smagorinsky.
+    /// dyn_s1 : (qsm^½, Φsm^½) par nœud (2 f32). dyn_s2 : formes mixtes
+    /// interpolées (ν_mix_t, ν_mix_g, κ_mix_t, κ_mix_g — 4 f32).
+    /// dyn_s3 : quantités de Lilly (num_v, den_v, num_k, den_k — 4 f32).
+    /// dyn_out : (ν_t, α_t, C^ν_dyn, C^κ_dyn) par nœud (4 f32).
+    #[allow(dead_code)]
+    dyn_s1: Option<wgpu::Buffer>,
+    #[allow(dead_code)]
+    dyn_s2: Option<wgpu::Buffer>,
+    #[allow(dead_code)]
+    dyn_s3: Option<wgpu::Buffer>,
+    dyn_out: Option<wgpu::Buffer>,
     /// Champs macroscopiques stock (ρ, ux, uy, T) — temps t+1 après dispatch 2.
     stock_buf: wgpu::Buffer,
     /// Staging MAP_READ (stock 4n + nu_t n f32) pour les lectures CPU.
     read_buf: wgpu::Buffer,
+    /// Staging MAP_READ des diagnostics dynamiques (dyn_out 4n f32).
+    dyn_read_buf: Option<wgpu::Buffer>,
 
     /// Bind groups pré-créés (buffers fixes) — variantes ping-pong A/B.
     bg_collide_a: wgpu::BindGroup,
     bg_collide_b: wgpu::BindGroup,
     bg_stream_macro_a: wgpu::BindGroup,
     bg_stream_macro_b: wgpu::BindGroup,
+    /// Étape D (G4) : bind groups des kernels dynamiques + collision
+    /// consommant ν_t/α_t de dyn_out (variantes ping-pong A/B).
+    bg_dyn1: Option<wgpu::BindGroup>,
+    bg_dyn2_a: Option<wgpu::BindGroup>,
+    bg_dyn2_b: Option<wgpu::BindGroup>,
+    bg_dyn3: Option<wgpu::BindGroup>,
+    bg_dyn4: Option<wgpu::BindGroup>,
+    bg_collide_dyn_a: Option<wgpu::BindGroup>,
+    bg_collide_dyn_b: Option<wgpu::BindGroup>,
 
     nx: usize,
     ny: usize,
@@ -138,6 +228,9 @@ pub struct GpuSolver {
     /// Params du dernier pas du batch (re-vérifiés à chaque pas : le batching
     /// n'est valable que si params reste identique bit-à-bit).
     batch_params: GpuParams,
+    /// true = le chemin dynamic Smagorinsky est actif (kernels dyn1/dyn2/dyn3
+    /// + collide_dyn au lieu de collide).
+    dynamic: bool,
     /// Info adaptateur (affichée au démarrage).
     adapter_info: String,
 }
@@ -145,6 +238,11 @@ pub struct GpuSolver {
 /// Taille du batch de pas (encoder unique) : amortit l'overhead CPU de
 /// création/soumission d'encoder — flushé avant tout readback.
 const BATCH_STEPS: usize = 64;
+
+// Bindings des kernels dynamiques (Étape D) : le module WGSL déclare les
+// bindings 10-15 (uniform DynParams + 4 buffers de travail) en plus des
+// bindings 0-9 du module existant. Les deux déclarations vivent dans le
+// même source WGSL : chaque entry point ne lie que ses bindings.
 const WGSL: &str = r#"
 // Paramètres uniformes (uniform buffer, f32).
 struct Params {
@@ -608,6 +706,562 @@ fn stream_macro(@builtin(global_invocation_id) gid: vec3<u32>) {
         stock[4u * k + 2u] = 0.0;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Étape D (porte G4) — dynamic Smagorinsky (échelles mixtes §2.3.5 thèse).
+// Réplique exacte, en f32, de `compute_dynamic_sgs` (solver.rs) : 4 kernels
+// ordonnés dans le MÊME compute pass, avant la collision (les barrières
+// storage wgpu entre dispatches d'un même pass garantissent l'ordre) :
+//   dyn1 : box test-filter (η·Δ̃) des champs stock et des produits (Léonard).
+//   dyn2 : S̃ij/|S̃| depuis π_neq (f_in), S̄ij/|S̄| (box dyn_s1), gradients,
+//          qsm^½, Φsm^½, |T̃|, |T̄| (Éq. 2.74/2.75) → dyn_s2.
+//   dyn3 : box(qsm^½/Φsm^½), formes mixtes interpolées (Éq. 2.73), tenseurs
+//          Germano M/L, contractions de Lilly (Éq. 2.58/2.70) → dyn_s3.
+//   dyn4 : régularisation Éq. 2.62 (box num/den), coefficient de Lilly
+//          (clamp [0, 0.04]), ν_t/α_t bornés (nu_sm_min + plancher TRT)
+//          → dyn_out[k] = (ν_t, α_t, C^ν_dyn, C^κ_dyn).
+//   collide_dyn : réplique de `collide` consommant ν_t/α_t de dyn_out.
+// NOTATION THÈSE (inversée vs convention usuelle) : Δ̃ = filtre grille = Δx ;
+//   Δ = filtre test = η·Δx ; ũ (thèse) = champ résolu, u (thèse) = test-filtré.
+// ---------------------------------------------------------------------------
+
+// Paramètres du modèle dynamique (constants au cours du run — voir Rust).
+struct DynParams {
+    alpha_exp: f32,       // exposant α de l'interpolation mixte
+    eta_test: f32,        // η = Δ/Δ̃
+    dtest: f32,           // Δ = η·Δx (Δx = 1)
+    delta_t: f32,         // ΔT global = 1 (PAS Δ̃·T — Tab. 2.3)
+    nu_mol: f32,          // ν moléculaire cible (nu_sm_min·ν)
+    alpha_mol: f32,       // α moléculaire cible
+    nu_sm_min: f32,       // borne νsm ≥ nu_sm_min·ν
+    tau_floor_margin: f32, // (TAU_TRT_FLOOR − 0.5)/3
+    box_width: u32,       // largeur du filtre box (nœuds, ≥ 1)
+    c_dyn_max: f32,       // clamp C ∈ [0, 0.04]
+    pad0: u32,
+    pad1: u32,
+    pad2: u32,
+    pad3: u32,
+    pad4: u32,
+    pad5: u32,
+};
+@group(0) @binding(10) var<uniform> D: DynParams;
+@group(0) @binding(11) var<storage, read_write> dyn_s1: array<f32>;
+@group(0) @binding(12) var<storage, read_write> dyn_s2: array<f32>;
+@group(0) @binding(13) var<storage, read_write> dyn_s3: array<f32>;
+@group(0) @binding(14) var<storage, read_write> dyn_out: array<f32>;
+
+// dyn_s1 (stride 8/nœud) : [ũx, ũy, Ŧ, ⟨uxux⟩, ⟨uxuy⟩, ⟨uyuy⟩, ⟨uxT⟩, ⟨uyT⟩]
+// dyn_s2 (stride 16) : [S̃xx, S̃xy, S̃yy, |S̃|, S̄xx, S̄xy, S̄yy, |S̄|,
+//                       ∂T̃x, ∂T̃y, ∂T̄x, ∂T̄y, qsm^½, Φsm^½, |T̃|, |T̄|]
+// dyn_s3 (stride 8) : [num_v, den_v, num_k, den_k, νsm_mix(grille), κsm_mix(grille), −, −]
+// dyn_out (stride 4) : [ν_t, α_t, C^ν_dyn, C^κ_dyn]
+
+// Fenêtre box [lo, hi) le long d'un axe (clamp unilatéral aux parois, comme
+// box_filter du CPU : half_left = (width−1)/2, fenêtre [i−half_left, i+w−half_left)).
+fn box_lo(i: i32) -> i32 {
+    let half_left = i32((D.box_width - 1u) / 2u);
+    return max(i - half_left, 0);
+}
+fn box_hi(i: i32, n: i32) -> i32 {
+    let half_left = i32((D.box_width - 1u) / 2u);
+    let w = i32(D.box_width);
+    return min(i + w - half_left, n);
+}
+
+// Box d'une composante c du stock (1=ux, 2=uy, 3=T).
+fn box_stock(ix: u32, iy: u32, c: u32) -> f32 {
+    let x0 = box_lo(i32(ix));
+    let x1 = box_hi(i32(ix), i32(P.nx));
+    let y0 = box_lo(i32(iy));
+    let y1 = box_hi(i32(iy), i32(P.ny));
+    var s = 0.0;
+    var yy = y0;
+    loop {
+        if (yy >= y1) { break; }
+        var xx = x0;
+        loop {
+            if (xx >= x1) { break; }
+            s = s + stock[4u * (u32(yy) * P.nx + u32(xx)) + c];
+            xx = xx + 1;
+        }
+        yy = yy + 1;
+    }
+    return s / f32((y1 - y0) * (x1 - x0));
+}
+
+// Box du produit de deux composantes du stock (Léonard au filtre test).
+fn box_stock_prod(ix: u32, iy: u32, c1: u32, c2: u32) -> f32 {
+    let x0 = box_lo(i32(ix));
+    let x1 = box_hi(i32(ix), i32(P.nx));
+    let y0 = box_lo(i32(iy));
+    let y1 = box_hi(i32(iy), i32(P.ny));
+    var s = 0.0;
+    var yy = y0;
+    loop {
+        if (yy >= y1) { break; }
+        var xx = x0;
+        loop {
+            if (xx >= x1) { break; }
+            let kk = u32(yy) * P.nx + u32(xx);
+            s = s + stock[4u * kk + c1] * stock[4u * kk + c2];
+            xx = xx + 1;
+        }
+        yy = yy + 1;
+    }
+    return s / f32((y1 - y0) * (x1 - x0));
+}
+
+// Box d'un composant c de dyn_s1 (stride 8).
+fn box_s1(ix: u32, iy: u32, c: u32) -> f32 {
+    let x0 = box_lo(i32(ix));
+    let x1 = box_hi(i32(ix), i32(P.nx));
+    let y0 = box_lo(i32(iy));
+    let y1 = box_hi(i32(iy), i32(P.ny));
+    var s = 0.0;
+    var yy = y0;
+    loop {
+        if (yy >= y1) { break; }
+        var xx = x0;
+        loop {
+            if (xx >= x1) { break; }
+            s = s + dyn_s1[8u * (u32(yy) * P.nx + u32(xx)) + c];
+            xx = xx + 1;
+        }
+        yy = yy + 1;
+    }
+    return s / f32((y1 - y0) * (x1 - x0));
+}
+
+// Box d'un composant c de dyn_s2 (stride 16).
+fn box_s2(ix: u32, iy: u32, c: u32) -> f32 {
+    let x0 = box_lo(i32(ix));
+    let x1 = box_hi(i32(ix), i32(P.nx));
+    let y0 = box_lo(i32(iy));
+    let y1 = box_hi(i32(iy), i32(P.ny));
+    var s = 0.0;
+    var yy = y0;
+    loop {
+        if (yy >= y1) { break; }
+        var xx = x0;
+        loop {
+            if (xx >= x1) { break; }
+            s = s + dyn_s2[16u * (u32(yy) * P.nx + u32(xx)) + c];
+            xx = xx + 1;
+        }
+        yy = yy + 1;
+    }
+    return s / f32((y1 - y0) * (x1 - x0));
+}
+
+// Box d'un composant c de dyn_s3 (stride 8).
+fn box_s3(ix: u32, iy: u32, c: u32) -> f32 {
+    let x0 = box_lo(i32(ix));
+    let x1 = box_hi(i32(ix), i32(P.nx));
+    let y0 = box_lo(i32(iy));
+    let y1 = box_hi(i32(iy), i32(P.ny));
+    var s = 0.0;
+    var yy = y0;
+    loop {
+        if (yy >= y1) { break; }
+        var xx = x0;
+        loop {
+            if (xx >= x1) { break; }
+            s = s + dyn_s3[8u * (u32(yy) * P.nx + u32(xx)) + c];
+            xx = xx + 1;
+        }
+        yy = yy + 1;
+    }
+    return s / f32((y1 - y0) * (x1 - x0));
+}
+
+// Dérivées centrales, parois clampées unilatéralement (ddx/ddy du CPU).
+fn ddx_s1(ix: u32, iy: u32, c: u32) -> f32 {
+    let xm = select(ix - 1u, 0u, ix == 0u);
+    let xp = select(ix + 1u, P.nx - 1u, ix + 1u >= P.nx);
+    return 0.5 * (dyn_s1[8u * (iy * P.nx + xp) + c] - dyn_s1[8u * (iy * P.nx + xm) + c]);
+}
+fn ddy_s1(ix: u32, iy: u32, c: u32) -> f32 {
+    let ym = select(iy - 1u, 0u, iy == 0u);
+    let yp = select(iy + 1u, P.ny - 1u, iy + 1u >= P.ny);
+    return 0.5 * (dyn_s1[8u * (yp * P.nx + ix) + c] - dyn_s1[8u * (ym * P.nx + ix) + c]);
+}
+fn ddx_stock(ix: u32, iy: u32, c: u32) -> f32 {
+    let xm = select(ix - 1u, 0u, ix == 0u);
+    let xp = select(ix + 1u, P.nx - 1u, ix + 1u >= P.nx);
+    return 0.5 * (stock[4u * (iy * P.nx + xp) + c] - stock[4u * (iy * P.nx + xm) + c]);
+}
+fn ddy_stock(ix: u32, iy: u32, c: u32) -> f32 {
+    let ym = select(iy - 1u, 0u, iy == 0u);
+    let yp = select(iy + 1u, P.ny - 1u, iy + 1u >= P.ny);
+    return 0.5 * (stock[4u * (yp * P.nx + ix) + c] - stock[4u * (ym * P.nx + ix) + c]);
+}
+
+// Puissance mixte : 0^0 → 1 (même sémantique que powf du CPU, cas α = 1).
+fn mpow(x: f32, e: f32) -> f32 {
+    return select(1.0, pow(x, e), e != 0.0);
+}
+
+// Coefficient de Lilly régularisé (lilly_coefficient du CPU) : C = (1/2)·num/den,
+// garde-fou den ≤ 0 / non fini → C = 0, clamp [0, C_DYN_MAX].
+fn lilly(num: f32, den: f32) -> f32 {
+    if (!(den > 0.0)) { return 0.0; }
+    let c = 0.5 * num / den;
+    let ok = (c == c) && (abs(c) < 3.4028235e38);
+    return select(0.0, clamp(c, 0.0, D.c_dyn_max), ok);
+}
+
+// --- dyn1 : box test-filter des champs stock et des produits (passe 1 CPU).
+@compute @workgroup_size(16, 16)
+fn dyn1(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let ix = gid.x;
+    let iy = gid.y;
+    if (ix >= P.nx || iy >= P.ny) { return; }
+    let k = iy * P.nx + ix;
+    dyn_s1[8u * k + 0u] = box_stock(ix, iy, 1u);           // ũx (champ résolu boxé)
+    dyn_s1[8u * k + 1u] = box_stock(ix, iy, 2u);           // ũy
+    dyn_s1[8u * k + 2u] = box_stock(ix, iy, 3u);           // Ŧ (test)
+    dyn_s1[8u * k + 3u] = box_stock_prod(ix, iy, 1u, 1u);  // ⟨ux ux⟩_test
+    dyn_s1[8u * k + 4u] = box_stock_prod(ix, iy, 1u, 2u);  // ⟨ux uy⟩_test
+    dyn_s1[8u * k + 5u] = box_stock_prod(ix, iy, 2u, 2u);  // ⟨uy uy⟩_test
+    dyn_s1[8u * k + 6u] = box_stock_prod(ix, iy, 1u, 3u);  // ⟨ux T⟩_test
+    dyn_s1[8u * k + 7u] = box_stock_prod(ix, iy, 2u, 3u);  // ⟨uy T⟩_test
+}
+
+// --- dyn2 : quantités aux deux niveaux (passe 2 CPU). S̃ij/|S̃| depuis
+// π_neq de f_in (MÊMES formules que collide), S̄ij/|S̄| par différences
+// centrées des champs boxés, gradients thermiques, similarité (Éq. 2.74),
+// |T̃|/|T̄| (Éq. 2.75).
+@compute @workgroup_size(16, 16)
+fn dyn2(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let ix = gid.x;
+    let iy = gid.y;
+    if (ix >= P.nx || iy >= P.ny) { return; }
+    let k = iy * P.nx + ix;
+    let n = n_tot();
+
+    let rho = stock[4u * k + 0u];
+    let ux = stock[4u * k + 1u];
+    let uy = stock[4u * k + 2u];
+    let temp = stock[4u * k + 3u];
+
+    // Populations + équilibres (identiques à collide).
+    let f0 = W0 + f_in[0u * n + k];
+    let f1 = W1 + f_in[1u * n + k];
+    let f2 = W1 + f_in[2u * n + k];
+    let f3 = W1 + f_in[3u * n + k];
+    let f4 = W1 + f_in[4u * n + k];
+    let f5 = W5 + f_in[5u * n + k];
+    let f6 = W5 + f_in[6u * n + k];
+    let f7 = W5 + f_in[7u * n + k];
+    let f8 = W5 + f_in[8u * n + k];
+    let u2 = ux * ux + uy * uy;
+    let c1 = 1.0 - u2 / (2.0 * CS2);
+    let f_eq0 = feq_c(W0, 0.0, 0.0, rho, ux, uy);
+    let f_eq1 = feq_c(W1, 1.0, 0.0, rho, ux, uy);
+    let f_eq2 = feq_c(W1, 0.0, 1.0, rho, ux, uy);
+    let f_eq3 = feq_c(W1, -1.0, 0.0, rho, ux, uy);
+    let f_eq4 = feq_c(W1, 0.0, -1.0, rho, ux, uy);
+    let f_eq5 = feq_c(W5, 1.0, 1.0, rho, ux, uy);
+    let f_eq6 = feq_c(W5, -1.0, 1.0, rho, ux, uy);
+    let f_eq7 = feq_c(W5, -1.0, -1.0, rho, ux, uy);
+    let f_eq8 = feq_c(W5, 1.0, -1.0, rho, ux, uy);
+    let d0 = f0 - f_eq0;
+    let d1 = f1 - f_eq1;
+    let d2 = f2 - f_eq2;
+    let d3 = f3 - f_eq3;
+    let d4 = f4 - f_eq4;
+    let d5 = f5 - f_eq5;
+    let d6 = f6 - f_eq6;
+    let d7 = f7 - f_eq7;
+    let d8 = f8 - f_eq8;
+    let pi_xx = d1 + d3 + d5 + d6 + d7 + d8;
+    let pi_xy = d5 - d6 + d7 - d8;
+    let pi_yy = d2 + d4 + d5 + d6 + d7 + d8;
+    let pi2 = pi_xx * pi_xx + 2.0 * pi_xy * pi_xy + pi_yy * pi_yy;
+    let denom = 2.0 * P.cs2 * P.tau_mol * max(rho, 1e-12);
+    let shxx = -pi_xx / denom;
+    let shxy = -pi_xy / denom;
+    let shyy = -pi_yy / denom;
+    let smag_hat = sqrt(pi2) / denom; // |S̃| identique collide
+
+    // S̄ij, |S̄| par différences centrées des champs boxés (dyn_s1).
+    let sxx = ddx_s1(ix, iy, 0u);
+    let syy = ddy_s1(ix, iy, 1u);
+    let sxy = 0.5 * (ddx_s1(ix, iy, 1u) + ddy_s1(ix, iy, 0u));
+    let sbxx = sxx;
+    let sbxy = sxy;
+    let sbyy = syy;
+    let smag_bar = sqrt(sxx * sxx + 2.0 * sxy * sxy + syy * syy);
+
+    // Gradients thermiques : ∂T̃/∂xj (stock brut), ∂T̄/∂xj (champ boxé).
+    let gtx = ddx_stock(ix, iy, 3u);
+    let gty = ddy_stock(ix, iy, 3u);
+    let gbx = ddx_s1(ix, iy, 2u);
+    let gby = ddy_s1(ix, iy, 2u);
+
+    // Similarité (Éq. 2.74) : qsm^½ = (1/(2√2))·√(Σ(ũ−ū)²) ;
+    // Φsm^½ = (1/2)|T̃−T̄|·√((1/2)Σ(ũ−ū)²).
+    let ubx_v = dyn_s1[8u * k + 0u];
+    let uby_v = dyn_s1[8u * k + 1u];
+    let tb_v = dyn_s1[8u * k + 2u];
+    let dux = ux - ubx_v;
+    let duy = uy - uby_v;
+    let du2 = dux * dux + duy * duy;
+    let qsm_h = sqrt(0.5 * du2) / 2.0;
+    let dt_local = temp - tb_v;
+    let phi_h = 0.5 * abs(dt_local) * sqrt(0.5 * du2);
+
+    // |T̃|/|T̄| (Éq. 2.75) : Ti = ∂T/∂xj Sij, |T| = √(2 Ti Ti).
+    let th_x = gtx * shxx + gty * shxy;
+    let th_y = gtx * shxy + gty * shyy;
+    let tmag_hat = sqrt(2.0 * (th_x * th_x + th_y * th_y));
+    let tb_x = gbx * sbxx + gby * sbxy;
+    let tb_y = gbx * sbxy + gby * sbyy;
+    let tmag_bar = sqrt(2.0 * (tb_x * tb_x + tb_y * tb_y));
+
+    dyn_s2[16u * k + 0u] = shxx;
+    dyn_s2[16u * k + 1u] = shxy;
+    dyn_s2[16u * k + 2u] = shyy;
+    dyn_s2[16u * k + 3u] = smag_hat;
+    dyn_s2[16u * k + 4u] = sbxx;
+    dyn_s2[16u * k + 5u] = sbxy;
+    dyn_s2[16u * k + 6u] = sbyy;
+    dyn_s2[16u * k + 7u] = smag_bar;
+    dyn_s2[16u * k + 8u] = gtx;
+    dyn_s2[16u * k + 9u] = gty;
+    dyn_s2[16u * k + 10u] = gbx;
+    dyn_s2[16u * k + 11u] = gby;
+    dyn_s2[16u * k + 12u] = qsm_h;
+    dyn_s2[16u * k + 13u] = phi_h;
+    dyn_s2[16u * k + 14u] = tmag_hat;
+    dyn_s2[16u * k + 15u] = tmag_bar;
+}
+
+// --- dyn3 : q̄sm/Φ̄sm (box), formes mixtes interpolées (Éq. 2.73), tenseurs
+// M/L mixtes, contractions de Lilly (passe 3 CPU).
+@compute @workgroup_size(16, 16)
+fn dyn3(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let ix = gid.x;
+    let iy = gid.y;
+    if (ix >= P.nx || iy >= P.ny) { return; }
+    let k = iy * P.nx + ix;
+
+    let shxx = dyn_s2[16u * k + 0u];
+    let shxy = dyn_s2[16u * k + 1u];
+    let shyy = dyn_s2[16u * k + 2u];
+    let smag_hat = dyn_s2[16u * k + 3u];
+    let sbxx = dyn_s2[16u * k + 4u];
+    let sbxy = dyn_s2[16u * k + 5u];
+    let sbyy = dyn_s2[16u * k + 6u];
+    let smag_bar = dyn_s2[16u * k + 7u];
+    let gtx = dyn_s2[16u * k + 8u];
+    let gty = dyn_s2[16u * k + 9u];
+    let gbx = dyn_s2[16u * k + 10u];
+    let gby = dyn_s2[16u * k + 11u];
+    let qsm_h = dyn_s2[16u * k + 12u];
+    let phi_h = dyn_s2[16u * k + 13u];
+    let tmag_hat = dyn_s2[16u * k + 14u];
+    let tmag_bar = dyn_s2[16u * k + 15u];
+
+    let ubx = dyn_s1[8u * k + 0u];
+    let uby = dyn_s1[8u * k + 1u];
+    let tb = dyn_s1[8u * k + 2u];
+    let lbuxx = dyn_s1[8u * k + 3u];
+    let lbuxy = dyn_s1[8u * k + 4u];
+    let lbuyy = dyn_s1[8u * k + 5u];
+    let lbutx = dyn_s1[8u * k + 6u];
+    let lbuty = dyn_s1[8u * k + 7u];
+
+    // q̄sm et Φ̄sm au filtre test : box des quantités construites (passe 2).
+    let qbar_h = box_s2(ix, iy, 12u);
+    let phibar_h = box_s2(ix, iy, 13u);
+
+    // Formes mixtes interpolées (Tab. 2.3) — α = 0.5 ⇒ moyenne géométrique.
+    let a = D.alpha_exp;
+    let b = 1.0 - a;
+    let dx = 1.0; // Δx
+    let nu_mix_t = mpow(D.dtest * D.dtest * smag_bar, a) * mpow(D.dtest * qbar_h, b);
+    let nu_mix_g = mpow(dx * dx * smag_hat, a) * mpow(dx * qsm_h, b);
+    let kap_mix_t = mpow(D.dtest * D.dtest * D.dtest / D.delta_t * tmag_bar, a)
+        * mpow(D.dtest / D.delta_t * phibar_h, b);
+    let kap_mix_g = mpow(dx * dx * dx / D.delta_t * tmag_hat, a)
+        * mpow(dx / D.delta_t * phi_h, b);
+
+    // Tenseur M_ij mixte : νsm_mix(test)·S̄ij − νsm_mix(grille)·S̃ij.
+    let mxx = nu_mix_t * sbxx - nu_mix_g * shxx;
+    let mxy = nu_mix_t * sbxy - nu_mix_g * shxy;
+    let myy = nu_mix_t * sbyy - nu_mix_g * shyy;
+    // Vecteur M_j mixte : κsm_mix(test)·∂T̄/∂xj − κsm_mix(grille)·∂T̃/∂xj.
+    let mx = kap_mix_t * gbx - kap_mix_g * gtx;
+    let my = kap_mix_t * gby - kap_mix_g * gty;
+
+    // Léonard au filtre test : L_ij = ⟨uiuj⟩_test − ũi ũj (Éq. 2.51).
+    let lxx = lbuxx - ubx * ubx;
+    let lxy = lbuxy - ubx * uby;
+    let lyy = lbuyy - uby * uby;
+    // L^d_ij = L_ij − (1/3)L_kk δij (formule 3D gardée, pas de zz en 2D).
+    let lkk3 = (lxx + lyy) / 3.0;
+    let ldxx = lxx - lkk3;
+    let ldyy = lyy - lkk3;
+    let ljx = lbutx - ubx * tb;
+    let ljy = lbuty - uby * tb;
+
+    // Contractions de Lilly (double comptage xy, symétrique).
+    let num_v = ldxx * mxx + 2.0 * lxy * mxy + ldyy * myy;
+    let den_v = mxx * mxx + 2.0 * mxy * mxy + myy * myy;
+    let num_k = ljx * mx + ljy * my;
+    let den_k = mx * mx + my * my;
+
+    dyn_s3[8u * k + 0u] = num_v;
+    dyn_s3[8u * k + 1u] = den_v;
+    dyn_s3[8u * k + 2u] = num_k;
+    dyn_s3[8u * k + 3u] = den_k;
+    dyn_s3[8u * k + 4u] = nu_mix_g;
+    dyn_s3[8u * k + 5u] = kap_mix_g;
+}
+
+// --- dyn4 : régularisation Éq. 2.62 (box num/den), coefficient de Lilly
+// (clamp [0, 0.04]), ν_t/α_t bornés (nu_sm_min + plancher TRT) → dyn_out.
+@compute @workgroup_size(16, 16)
+fn dyn4(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let ix = gid.x;
+    let iy = gid.y;
+    if (ix >= P.nx || iy >= P.ny) { return; }
+    let k = iy * P.nx + ix;
+
+    let num_v_b = box_s3(ix, iy, 0u);
+    let den_v_b = box_s3(ix, iy, 1u);
+    let num_k_b = box_s3(ix, iy, 2u);
+    let den_k_b = box_s3(ix, iy, 3u);
+    let cnu = lilly(num_v_b, den_v_b);
+    let ck = lilly(num_k_b, den_k_b);
+
+    // ν_t = C^ν_dyn·νsm_mix(grille) ; α_t = C^κ_dyn·κsm_mix(grille).
+    // Garde-fou TRT : ν_t/α_t ≥ max(nu_sm_min·mol, marge_plancher − mol).
+    let nu_mix_g = dyn_s3[8u * k + 4u];
+    let kap_mix_g = dyn_s3[8u * k + 5u];
+    let nt = cnu * nu_mix_g;
+    let nu_t_min = max(D.nu_sm_min * D.nu_mol, D.tau_floor_margin - D.nu_mol);
+    let nu_t = max(nt, nu_t_min);
+    let at = ck * kap_mix_g;
+    let alpha_t_min = max(D.nu_sm_min * D.alpha_mol, D.tau_floor_margin - D.alpha_mol);
+    let alpha_t = max(at, alpha_t_min);
+
+    dyn_out[4u * k + 0u] = nu_t;
+    dyn_out[4u * k + 1u] = alpha_t;
+    dyn_out[4u * k + 2u] = cnu;
+    dyn_out[4u * k + 3u] = ck;
+}
+
+// --- collide_dyn : réplique exacte de `collide` consommant ν_t/α_t de
+// dyn_out (kernel dyn4 du même pass, barrière wgpu) au lieu de
+// ν_t = (Cs·Δx)²·|S| et α_t = ν_t/Pr_t. Le π:π n'est plus nécessaire.
+@compute @workgroup_size(16, 16)
+fn collide_dyn(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let ix = gid.x;
+    let iy = gid.y;
+    if (ix >= P.nx || iy >= P.ny) { return; }
+    let k = iy * P.nx + ix;
+    let n = n_tot();
+
+    let rho = stock[4u * k + 0u];
+    let ux = stock[4u * k + 1u];
+    let uy = stock[4u * k + 2u];
+    let temp = stock[4u * k + 3u];
+
+    let fy_node = rho * P.beta_eff * (temp - P.t_ref);
+
+    let f0 = W0 + f_in[0u * n + k];
+    let f1 = W1 + f_in[1u * n + k];
+    let f2 = W1 + f_in[2u * n + k];
+    let f3 = W1 + f_in[3u * n + k];
+    let f4 = W1 + f_in[4u * n + k];
+    let f5 = W5 + f_in[5u * n + k];
+    let f6 = W5 + f_in[6u * n + k];
+    let f7 = W5 + f_in[7u * n + k];
+    let f8 = W5 + f_in[8u * n + k];
+    let g0 = g_in[0u * n + k];
+    let g1 = g_in[1u * n + k];
+    let g2 = g_in[2u * n + k];
+    let g3 = g_in[3u * n + k];
+    let g4 = g_in[4u * n + k];
+    let g5 = g_in[5u * n + k];
+    let g6 = g_in[6u * n + k];
+    let g7 = g_in[7u * n + k];
+    let g8 = g_in[8u * n + k];
+
+    let u2 = ux * ux + uy * uy;
+    let c1 = 1.0 - u2 / (2.0 * CS2);
+    let f_eq0 = feq_c(W0, 0.0, 0.0, rho, ux, uy);
+    let f_eq1 = feq_c(W1, 1.0, 0.0, rho, ux, uy);
+    let f_eq2 = feq_c(W1, 0.0, 1.0, rho, ux, uy);
+    let f_eq3 = feq_c(W1, -1.0, 0.0, rho, ux, uy);
+    let f_eq4 = feq_c(W1, 0.0, -1.0, rho, ux, uy);
+    let f_eq5 = feq_c(W5, 1.0, 1.0, rho, ux, uy);
+    let f_eq6 = feq_c(W5, -1.0, 1.0, rho, ux, uy);
+    let f_eq7 = feq_c(W5, -1.0, -1.0, rho, ux, uy);
+    let f_eq8 = feq_c(W5, 1.0, -1.0, rho, ux, uy);
+    let g_eq0 = geq_c(W0, 0.0, 0.0, temp, ux, uy);
+    let g_eq1 = geq_c(W1, 1.0, 0.0, temp, ux, uy);
+    let g_eq2 = geq_c(W1, 0.0, 1.0, temp, ux, uy);
+    let g_eq3 = geq_c(W1, -1.0, 0.0, temp, ux, uy);
+    let g_eq4 = geq_c(W1, 0.0, -1.0, temp, ux, uy);
+    let g_eq5 = geq_c(W5, 1.0, 1.0, temp, ux, uy);
+    let g_eq6 = geq_c(W5, -1.0, 1.0, temp, ux, uy);
+    let g_eq7 = geq_c(W5, -1.0, -1.0, temp, ux, uy);
+    let g_eq8 = geq_c(W5, 1.0, -1.0, temp, ux, uy);
+
+    let d0 = f0 - f_eq0;
+    let d1 = f1 - f_eq1;
+    let d2 = f2 - f_eq2;
+    let d3 = f3 - f_eq3;
+    let d4 = f4 - f_eq4;
+    let d5 = f5 - f_eq5;
+    let d6 = f6 - f_eq6;
+    let d7 = f7 - f_eq7;
+    let d8 = f8 - f_eq8;
+
+    // Étape D : ν_t/α_t dynamiques de dyn_out (passe 3 du même compute pass).
+    let nu_t_node = dyn_out[4u * k + 0u];
+    let alpha_t = dyn_out[4u * k + 1u];
+    nu_t[k] = nu_t_node;
+
+    let tau_plus = 0.5 + 3.0 * (P.nu_eff + nu_t_node);
+    let tau_minus = 0.5 + P.lambda_trt / (tau_plus - 0.5);
+    let tau_t_plus = 0.5 + 3.0 * (P.alpha_eff + alpha_t);
+    let a_f = 0.5 * (1.0 / tau_plus + 1.0 / tau_minus);
+    let b_f = 0.5 * (1.0 / tau_plus - 1.0 / tau_minus);
+    let a_g = 1.0 / tau_t_plus; // τ_t− = τ_t+ ⇒ b_g = 0
+
+    f_col[0u * n + k] = trt_f(W0, 0.0, 0.0, f_in[0u * n + k], d0, d0, ux, uy,
+                              fy_node, a_f, b_f, tau_minus, tau_plus) - W0;
+    f_col[3u * n + k] = trt_f(W1, -1.0, 0.0, f_in[3u * n + k], d3, d1, ux, uy,
+                              fy_node, a_f, b_f, tau_minus, tau_plus) - W1;
+    f_col[1u * n + k] = trt_f(W1, 1.0, 0.0, f_in[1u * n + k], d1, d3, ux, uy,
+                              fy_node, a_f, b_f, tau_minus, tau_plus) - W1;
+    f_col[4u * n + k] = trt_f(W1, 0.0, -1.0, f_in[4u * n + k], d4, d2, ux, uy,
+                              fy_node, a_f, b_f, tau_minus, tau_plus) - W1;
+    f_col[2u * n + k] = trt_f(W1, 0.0, 1.0, f_in[2u * n + k], d2, d4, ux, uy,
+                              fy_node, a_f, b_f, tau_minus, tau_plus) - W1;
+    f_col[7u * n + k] = trt_f(W5, -1.0, -1.0, f_in[7u * n + k], d7, d5, ux, uy,
+                              fy_node, a_f, b_f, tau_minus, tau_plus) - W5;
+    f_col[5u * n + k] = trt_f(W5, 1.0, 1.0, f_in[5u * n + k], d5, d7, ux, uy,
+                              fy_node, a_f, b_f, tau_minus, tau_plus) - W5;
+    f_col[8u * n + k] = trt_f(W5, 1.0, -1.0, f_in[8u * n + k], d8, d6, ux, uy,
+                              fy_node, a_f, b_f, tau_minus, tau_plus) - W5;
+    f_col[6u * n + k] = trt_f(W5, -1.0, 1.0, f_in[6u * n + k], d6, d8, ux, uy,
+                              fy_node, a_f, b_f, tau_minus, tau_plus) - W5;
+
+    g_col[0u * n + k] = g0 - a_g * (g0 - g_eq0);
+    g_col[1u * n + k] = g1 - a_g * (g1 - g_eq1);
+    g_col[2u * n + k] = g2 - a_g * (g2 - g_eq2);
+    g_col[3u * n + k] = g3 - a_g * (g3 - g_eq3);
+    g_col[4u * n + k] = g4 - a_g * (g4 - g_eq4);
+    g_col[5u * n + k] = g5 - a_g * (g5 - g_eq5);
+    g_col[6u * n + k] = g6 - a_g * (g6 - g_eq6);
+    g_col[7u * n + k] = g7 - a_g * (g7 - g_eq7);
+    g_col[8u * n + k] = g8 - a_g * (g8 - g_eq8);
+}
 "#;
 
 impl GpuSolver {
@@ -655,6 +1309,20 @@ impl GpuSolver {
         let pipe_collide = mk_pipe("cavity_collide", "collide");
         let pipe_stream_macro = mk_pipe("cavity_stream_macro", "stream_macro");
 
+        // Étape D (porte G4) : kernels du dynamic Smagorinsky (sim.dynamic_smag).
+        let dynamic = sim.dynamic_smag;
+        let (pipe_dyn1, pipe_dyn2, pipe_dyn3, pipe_dyn4, pipe_collide_dyn) = if dynamic {
+            (
+                Some(mk_pipe("cavity_dyn1", "dyn1")),
+                Some(mk_pipe("cavity_dyn2", "dyn2")),
+                Some(mk_pipe("cavity_dyn3", "dyn3")),
+                Some(mk_pipe("cavity_dyn4", "dyn4")),
+                Some(mk_pipe("cavity_collide_dyn", "collide_dyn")),
+            )
+        } else {
+            (None, None, None, None, None)
+        };
+
         let nx = sim.nx();
         let ny = sim.ny();
         let n = nx * ny;
@@ -696,6 +1364,59 @@ impl GpuSolver {
             contents: bytemuck::cast_slice(&nu_t_init),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         });
+
+        // Étape D (G4) : buffers de travail du dynamic Smagorinsky + uniform
+        // DynParams + staging de lecture des diagnostics (C^ν, C^κ).
+        let (dyn_params_buf, dyn_s1, dyn_s2, dyn_s3, dyn_out, dyn_read_buf) = if dynamic {
+            // Mêmes quantités que `compute_dynamic_sgs` du CPU : ν/α MOLÉCULAIRES
+            // cibles (pas les valeurs rampées — rampe côté collide seulement),
+            // largeur box = round(max(η,1)), dtest = η·Δx, marge plancher TRT.
+            let eta = sim.eta_test.max(1.0);
+            let dparams = GpuDynParams {
+                alpha_exp: sim.smag_alpha as f32,
+                eta_test: eta as f32,
+                dtest: eta as f32,
+                delta_t: DELTA_T as f32,
+                nu_mol: sim.nu as f32,
+                alpha_mol: sim.alpha as f32,
+                nu_sm_min: sim.nu_sm_min as f32,
+                tau_floor_margin: ((TAU_TRT_FLOOR - 0.5) / 3.0) as f32,
+                box_width: ((eta.round() as usize).max(1)) as u32,
+                c_dyn_max: C_DYN_MAX as f32,
+                _pad: [0; 6],
+            };
+            let dpb = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("dyn_params"),
+                contents: bytemuck::bytes_of(&dparams),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+            let mk_scratch = |label: &str, n_f32: usize| {
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some(label),
+                    size: (n_f32 * std::mem::size_of::<f32>()) as u64,
+                    usage: wgpu::BufferUsages::STORAGE,
+                    mapped_at_creation: false,
+                })
+            };
+            let s1 = mk_scratch("dyn_s1", 8 * n);
+            let s2 = mk_scratch("dyn_s2", 16 * n);
+            let s3 = mk_scratch("dyn_s3", 8 * n);
+            let dout = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("dyn_out"),
+                size: (4 * n * std::mem::size_of::<f32>()) as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            });
+            let drb = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("dyn_read_staging"),
+                size: (4 * n * std::mem::size_of::<f32>()) as u64,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            (Some(dpb), Some(s1), Some(s2), Some(s3), Some(dout), Some(drb))
+        } else {
+            (None, None, None, None, None, None)
+        };
 
         // Stock macroscopique : champs du solveur CPU (temps t initial,
         // correction de vitesse Guo et no-slip déjà appliqués par le CPU).
@@ -803,12 +1524,121 @@ impl GpuSolver {
             ],
         );
 
+        // Étape D (G4) : bind groups des kernels dynamiques + collision
+        // dynamique (variantes ping-pong A/B — collide_dyn lit f_in A/B).
+        let (bg_dyn1, bg_dyn2_a, bg_dyn2_b, bg_dyn3, bg_dyn4, bg_collide_dyn_a, bg_collide_dyn_b) =
+            if dynamic {
+                let dpb = dyn_params_buf.as_ref().expect("dyn_params_buf");
+                let s1b = dyn_s1.as_ref().expect("dyn_s1");
+                let s2b = dyn_s2.as_ref().expect("dyn_s2");
+                let s3b = dyn_s3.as_ref().expect("dyn_s3");
+                let dob = dyn_out.as_ref().expect("dyn_out");
+                let p1 = pipe_dyn1.as_ref().expect("pipe_dyn1");
+                let p2 = pipe_dyn2.as_ref().expect("pipe_dyn2");
+                let p3 = pipe_dyn3.as_ref().expect("pipe_dyn3");
+                let p4 = pipe_dyn4.as_ref().expect("pipe_dyn4");
+                let pcd = pipe_collide_dyn.as_ref().expect("pipe_collide_dyn");
+                // dyn1 lit stock, écrit dyn_s1 (uniforms + 2 buffers).
+                let bg1 = mk_bg(
+                    "bg_dyn1",
+                    &p1.get_bind_group_layout(0),
+                    &[
+                        ent(0, uniform.clone()),
+                        ent(5, stockb.clone()),
+                        ent(10, dpb.as_entire_binding()),
+                        ent(11, s1b.as_entire_binding()),
+                    ],
+                );
+                // dyn2 lit stock + f_in (A ou B) + dyn_s1, écrit dyn_s2.
+                let bg2a = mk_bg(
+                    "bg_dyn2_a",
+                    &p2.get_bind_group_layout(0),
+                    &[
+                        ent(0, uniform.clone()),
+                        ent(1, f_a.as_entire_binding()),
+                        ent(5, stockb.clone()),
+                        ent(11, s1b.as_entire_binding()),
+                        ent(12, s2b.as_entire_binding()),
+                    ],
+                );
+                let bg2b = mk_bg(
+                    "bg_dyn2_b",
+                    &p2.get_bind_group_layout(0),
+                    &[
+                        ent(0, uniform.clone()),
+                        ent(1, f_b.as_entire_binding()),
+                        ent(5, stockb.clone()),
+                        ent(11, s1b.as_entire_binding()),
+                        ent(12, s2b.as_entire_binding()),
+                    ],
+                );
+                let bg3 = mk_bg(
+                    "bg_dyn3",
+                    &p3.get_bind_group_layout(0),
+                    &[
+                        ent(0, uniform.clone()),
+                        ent(10, dpb.as_entire_binding()),
+                        ent(11, s1b.as_entire_binding()),
+                        ent(12, s2b.as_entire_binding()),
+                        ent(13, s3b.as_entire_binding()),
+                    ],
+                );
+                let bg4 = mk_bg(
+                    "bg_dyn4",
+                    &p4.get_bind_group_layout(0),
+                    &[
+                        ent(0, uniform.clone()),
+                        ent(10, dpb.as_entire_binding()),
+                        ent(13, s3b.as_entire_binding()),
+                        ent(14, dob.as_entire_binding()),
+                    ],
+                );
+                // collide_dyn : bind group du collide existant + dyn_out (15).
+                let bcd_a = mk_bg(
+                    "bg_collide_dyn_a",
+                    &pcd.get_bind_group_layout(0),
+                    &[
+                        ent(0, uniform.clone()),
+                        ent(1, fa.clone()),
+                        ent(2, ga.clone()),
+                        ent(5, stockb.clone()),
+                        ent(6, fcol.clone()),
+                        ent(7, gcol.clone()),
+                        ent(9, ntb.clone()),
+                        ent(14, dob.as_entire_binding()),
+                    ],
+                );
+                let bcd_b = mk_bg(
+                    "bg_collide_dyn_b",
+                    &pcd.get_bind_group_layout(0),
+                    &[
+                        ent(0, uniform.clone()),
+                        ent(1, fb.clone()),
+                        ent(2, gb.clone()),
+                        ent(5, stockb.clone()),
+                        ent(6, fcol.clone()),
+                        ent(7, gcol.clone()),
+                        ent(9, ntb.clone()),
+                        ent(14, dob.as_entire_binding()),
+                    ],
+                );
+                (Some(bg1), Some(bg2a), Some(bg2b), Some(bg3), Some(bg4), Some(bcd_a), Some(bcd_b))
+            } else {
+                (None, None, None, None, None, None, None)
+            };
+
         Ok(Self {
             device,
             queue,
             pipe_collide,
             pipe_stream_macro,
+            pipe_dyn1,
+            pipe_dyn2,
+            pipe_dyn3,
+            pipe_dyn4,
+            pipe_collide_dyn,
             params_buf,
+            dyn_params_buf,
             f_a,
             g_a,
             f_b,
@@ -816,12 +1646,24 @@ impl GpuSolver {
             f_col,
             g_col,
             nu_t_buf,
+            dyn_s1,
+            dyn_s2,
+            dyn_s3,
+            dyn_out,
             stock_buf,
             read_buf,
+            dyn_read_buf,
             bg_collide_a,
             bg_collide_b,
             bg_stream_macro_a,
             bg_stream_macro_b,
+            bg_dyn1,
+            bg_dyn2_a,
+            bg_dyn2_b,
+            bg_dyn3,
+            bg_dyn4,
+            bg_collide_dyn_a,
+            bg_collide_dyn_b,
             nx,
             ny,
             time_step: 0,
@@ -829,6 +1671,7 @@ impl GpuSolver {
             batch_enc: None,
             batch_len: 0,
             batch_params: params,
+            dynamic,
             adapter_info,
         })
     }
@@ -943,10 +1786,18 @@ impl GpuSolver {
             .expect("encoder batché présent après flush/création");
 
         // Ping-pong : pas pair lit A écrit B, pas impair inverse.
-        let (bg_collide, bg_stream_macro) = if self.even {
-            (&self.bg_collide_a, &self.bg_stream_macro_a)
+        let (bg_collide, bg_stream_macro, bg_collide_dyn) = if self.even {
+            (
+                &self.bg_collide_a,
+                &self.bg_stream_macro_a,
+                &self.bg_collide_dyn_a,
+            )
         } else {
-            (&self.bg_collide_b, &self.bg_stream_macro_b)
+            (
+                &self.bg_collide_b,
+                &self.bg_stream_macro_b,
+                &self.bg_collide_dyn_b,
+            )
         };
         self.even = !self.even;
 
@@ -957,9 +1808,50 @@ impl GpuSolver {
             });
             let wg_x = (self.nx as u32).div_ceil(16);
             let wg_y = (self.ny as u32).div_ceil(16);
-            pass.set_pipeline(&self.pipe_collide);
-            pass.set_bind_group(0, bg_collide, &[]);
-            pass.dispatch_workgroups(wg_x, wg_y, 1);
+            // Étape D (G4) : le dynamic Smagorinsky précède la collision —
+            // dyn1 → dyn2 (f_in A/B du pas courant) → dyn3 → dyn4 →
+            // collide_dyn, tous dans le MÊME compute pass (les barrières
+            // wgpu entre dispatches garantissent l'ordre ; ν_t/α_t restent
+            // sur GPU, aucun readback). La variante dyn2 suit le ping-pong
+            // de collide_dyn (même buffer f_in lu).
+            if self.dynamic {
+                let bg_collide_dyn = bg_collide_dyn.as_ref().expect("bg_collide_dyn");
+                let bg_dyn2 = if std::ptr::eq(
+                    bg_collide_dyn,
+                    self.bg_collide_dyn_a.as_ref().expect("bg_collide_dyn_a"),
+                ) {
+                    self.bg_dyn2_a.as_ref().expect("bg_dyn2_a")
+                } else {
+                    self.bg_dyn2_b.as_ref().expect("bg_dyn2_b")
+                };
+                let bg_dyn1 = self.bg_dyn1.as_ref().expect("bg_dyn1");
+                let bg_dyn3 = self.bg_dyn3.as_ref().expect("bg_dyn3");
+                let bg_dyn4 = self.bg_dyn4.as_ref().expect("bg_dyn4");
+                let p_dyn1 = self.pipe_dyn1.as_ref().expect("pipe_dyn1");
+                let p_dyn2 = self.pipe_dyn2.as_ref().expect("pipe_dyn2");
+                let p_dyn3 = self.pipe_dyn3.as_ref().expect("pipe_dyn3");
+                let p_dyn4 = self.pipe_dyn4.as_ref().expect("pipe_dyn4");
+                let p_collide_dyn = self.pipe_collide_dyn.as_ref().expect("pipe_collide_dyn");
+                pass.set_pipeline(p_dyn1);
+                pass.set_bind_group(0, bg_dyn1, &[]);
+                pass.dispatch_workgroups(wg_x, wg_y, 1);
+                pass.set_pipeline(p_dyn2);
+                pass.set_bind_group(0, bg_dyn2, &[]);
+                pass.dispatch_workgroups(wg_x, wg_y, 1);
+                pass.set_pipeline(p_dyn3);
+                pass.set_bind_group(0, bg_dyn3, &[]);
+                pass.dispatch_workgroups(wg_x, wg_y, 1);
+                pass.set_pipeline(p_dyn4);
+                pass.set_bind_group(0, bg_dyn4, &[]);
+                pass.dispatch_workgroups(wg_x, wg_y, 1);
+                pass.set_pipeline(p_collide_dyn);
+                pass.set_bind_group(0, bg_collide_dyn, &[]);
+                pass.dispatch_workgroups(wg_x, wg_y, 1);
+            } else {
+                pass.set_pipeline(&self.pipe_collide);
+                pass.set_bind_group(0, bg_collide, &[]);
+                pass.dispatch_workgroups(wg_x, wg_y, 1);
+            }
             pass.set_pipeline(&self.pipe_stream_macro);
             pass.set_bind_group(0, bg_stream_macro, &[]);
             pass.dispatch_workgroups(wg_x, wg_y, 1);
@@ -1030,6 +1922,11 @@ impl GpuSolver {
     /// Réinjecte le macroscopique GPU (ρ, ux, uy, T) et ν_t dans les champs
     /// du solveur CPU — SANS toucher au pas de temps CPU. Permet de réutiliser
     /// `post.rs`, `TimeAverager` et les exports de snapshots inchangés.
+    /// Étape D (G4) : en mode dynamic, les coefficients C^ν_dyn/C^κ_dyn de
+    /// dyn_out (zw) sont réduits SÉQUENTIELLEMENT côté CPU (moyenne/max —
+    /// mêmes grandeurs que les diagnostics `compute_dynamic_sgs`, pas
+    /// d'atomiques flottantes) et écrits dans sim.cs_dyn_mean/cs_dyn_max/
+    /// kappa_dyn_mean/kappa_dyn_max.
     pub fn sync_into(&mut self, sim: &mut CavitySolver) -> Result<(), String> {
         self.flush(); // le batch en attente doit être soumis avant le readback
         let n = self.nx * self.ny;
@@ -1041,7 +1938,74 @@ impl GpuSolver {
             sim.lbm.temperature[k] = data[4 * k + 3] as f64;
             sim.nu_t[k] = data[4 * n + k] as f64;
         }
+        // Diagnostics du dynamic Smagorinsky (le pas GPU le plus récent).
+        if self.dynamic {
+            let (cnu_mean, cnu_max, ck_mean, ck_max) = self.read_dyn_diagnostics()?;
+            sim.cs_dyn_mean = cnu_mean;
+            sim.cs_dyn_max = cnu_max;
+            sim.kappa_dyn_mean = ck_mean;
+            sim.kappa_dyn_max = ck_max;
+        }
         Ok(())
+    }
+
+    /// Lit dyn_out (ν_t, α_t, C^ν_dyn, C^κ_dyn par nœud) et réduit les
+    /// coefficients dynamiques côté CPU (réduction séquentielle f64 —
+    /// déterministe, pas d'atomiques flottantes côté GPU).
+    fn read_dyn_diagnostics(&self) -> Result<(f64, f64, f64, f64), String> {
+        let n = self.nx * self.ny;
+        let dout = self.dyn_out.as_ref().expect("dyn_out");
+        let drb = self.dyn_read_buf.as_ref().expect("dyn_read_buf");
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("dyn_read") });
+        encoder.copy_buffer_to_buffer(
+            dout,
+            0,
+            drb,
+            0,
+            (4 * n * std::mem::size_of::<f32>()) as u64,
+        );
+        self.queue.submit(Some(encoder.finish()));
+        let slice = drb.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        self.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .map_err(|e| format!("wgpu : timeout/erreur du poll GPU ({e})"))?;
+        rx.recv()
+            .map_err(|e| format!("wgpu : canal map_async interrompu ({e})"))?
+            .map_err(|e| format!("wgpu : échec du mapping dyn_read_buf ({e})"))?;
+        let mapped = slice
+            .get_mapped_range()
+            .map_err(|e| format!("wgpu : échec du get_mapped_range ({e})"))?;
+        let data: Vec<f32> = bytemuck::cast_slice(&mapped[..]).to_vec();
+        drop(mapped);
+        drb.unmap();
+        // Réduction séquentielle en f64 (conversions f32 → f64) — mêmes
+        // grandeurs que la passe 4 de `compute_dynamic_sgs` (moyenne/max).
+        let mut cnu_sum = 0.0f64;
+        let mut cnu_max = 0.0f64;
+        let mut ck_sum = 0.0f64;
+        let mut ck_max = 0.0f64;
+        for k in 0..n {
+            let cnu = data[4 * k + 2] as f64;
+            let ck = data[4 * k + 3] as f64;
+            cnu_sum += cnu;
+            if cnu > cnu_max {
+                cnu_max = cnu;
+            }
+            ck_sum += ck;
+            if ck > ck_max {
+                ck_max = ck;
+            }
+        }
+        Ok((cnu_sum / n as f64, cnu_max, ck_sum / n as f64, ck_max))
     }
 
     /// Lit le buffer stock (ρ, ux, uy, T) — synchro GPU→CPU. Retourne les
@@ -1180,5 +2144,69 @@ mod gpu_tests {
             derive < 1e-3,
             "dérive de masse excessive : m0={m0} m1={m1} dérive/nœud={derive:.3e}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Étape D (porte G4) — dynamic Smagorinsky sur GPU.
+    // -----------------------------------------------------------------------
+
+    /// Solveur dynamic Smagorinsky (α = 0.5, η = 2, défauts CLI).
+    fn small_solver_dyn() -> CavitySolver {
+        let mut sim = CavitySolver::new(16, 64, 1.0e6, 0.71, 0.10, 0.9, 0.02, 42, 1, 1.0, 1.0, None);
+        sim.set_dynamic_sgs(true, 0.5, -0.1, 2.0);
+        sim
+    }
+
+    #[test]
+    #[ignore = "nécessite un adaptateur GPU (Metal) — cargo test --release -- --ignored"]
+    fn gpu_one_step_dynamic_smag_matches_cpu() {
+        // 1 pas CPU vs 1 pas GPU en mode échelles mixtes dynamiques :
+        // le kernel dyn1..dyn4 doit reproduire `compute_dynamic_sgs` +
+        // `collide_node(nu_t_pre)` à la tolérance f32 près.
+        let mut sim_cpu = small_solver_dyn();
+        let mut sim_gpu = small_solver_dyn();
+        let mut gpu = GpuSolver::from_solver(&sim_gpu).expect("init GPU");
+
+        sim_cpu.step();
+        gpu.step(&sim_gpu);
+        gpu.sync_into(&mut sim_gpu).expect("sync");
+
+        let n = 16 * 64;
+        for k in 0..n {
+            assert!(
+                (sim_gpu.lbm.rho[k] - sim_cpu.lbm.rho[k]).abs() < 1e-4,
+                "rho k={k} : gpu={} cpu={}",
+                sim_gpu.lbm.rho[k],
+                sim_cpu.lbm.rho[k]
+            );
+            assert!(
+                (sim_gpu.lbm.uy[k] - sim_cpu.lbm.uy[k]).abs() < 1e-4,
+                "uy k={k} : gpu={} cpu={}",
+                sim_gpu.lbm.uy[k],
+                sim_cpu.lbm.uy[k]
+            );
+            assert!(
+                (sim_gpu.lbm.temperature[k] - sim_cpu.lbm.temperature[k]).abs() < 1e-4,
+                "T k={k} : gpu={} cpu={}",
+                sim_gpu.lbm.temperature[k],
+                sim_cpu.lbm.temperature[k]
+            );
+            // ν_t dynamique : tolérance relative 2 % (f32, box/powf).
+            let nt_gpu = sim_gpu.nu_t[k];
+            let nt_cpu = sim_cpu.nu_t[k];
+            assert!(
+                (nt_gpu - nt_cpu).abs() <= 0.02 * nt_cpu.abs().max(1e-12) + 1e-9,
+                "nu_t k={k} : gpu={nt_gpu:.6e} cpu={nt_cpu:.6e}"
+            );
+        }
+        // Diagnostics dynamiques cohérents (même procédure de Lilly).
+        assert!(
+            (sim_gpu.cs_dyn_mean - sim_cpu.cs_dyn_mean).abs() < 0.02 * sim_cpu.cs_dyn_mean.abs().max(1e-12) + 1e-9,
+            "cs_dyn_mean : gpu={} cpu={}",
+            sim_gpu.cs_dyn_mean,
+            sim_cpu.cs_dyn_mean
+        );
+        assert!(sim_gpu.cs_dyn_max >= 0.0 && sim_gpu.cs_dyn_max <= 0.04 + 1e-6);
+        assert!(sim_gpu.kappa_dyn_max >= 0.0 && sim_gpu.kappa_dyn_max <= 0.04 + 1e-6);
     }
 }

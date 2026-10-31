@@ -61,7 +61,7 @@ de la précision sur le non-équilibre.
 | G1 | Le kernel GPU reproduit le CPU (Ra=1e6) | Nuc écart ≤ 1 %, champs visuellement identiques, w̄ max | **PASSÉE 2026-10-31** (0.001 %, VALIDATION_GPU_ETAPA_G1.md) |
 | G2 | La précision f32+offset suffit | idem à Ra=1e8 (f^neq plus grand) — écarts ≤ 2 % | **PASSÉE 2026-10-31** (0.045 %, dérive masse linéaire, VALIDATION_GPU_ETAPB_G2.md) |
 | G3 | Le gain est réel | MLUPS mesuré sur 64×256 et 256×1024 : ≥ 10× le CPU (32 MLUPS) | **PASSÉE 2026-10-31** (×9.4-9.7 sur 64×256, **×31-34 sur 256×1024** — 470-490 MLUPS, VALIDATION_GPU_ETAPC_G3.md ; déroulage + fusion 2 dispatches + batching + SoA) |
-| G4 | Le dynamique survit au GPU | smoke --dynamic-smag Ra=1e6 : κ_dyn ∈ [0, 0.04], pas de NaN | — |
+| G4 | Le dynamique survit au GPU | smoke --dynamic-smag Ra=1e6 : κ_dyn ∈ [0, 0.04], pas de NaN | **PASSÉE 2026-10-31** (test 1 pas ≡ CPU à 1e-4, Nuc écart 0.005 %, κ_dyn_max = 0.0400 = clamp, 4 tests GPU verts, VALIDATION_GPU_ETAPD_G4.md ; coût perf ×3-×10 vs fixe, ~2× CPU j8 quand même) |
 | G5 | Ra=1e10 complet | Nuc vs CPU (55.20 fixe / 101.19 256×1024) à tolérance, run < 1 h | — |
 
 ### G5 = campagne cible de thèse (décision 2026-10-31)
