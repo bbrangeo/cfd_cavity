@@ -215,7 +215,8 @@ Expérimentations de stabilité antérieures et résolutions : voir
 
 | Option | Défaut | Description |
 |---|---|---|
-| `--nx` / `--ny` | 64 / 256 | dimensions de la grille (ny > nx, Az ≈ 4) |
+| `--mode` | uniform | solveur : `uniform` (référence validée) ou `octree` (multi-niveaux, ancien crate `cfd_cavity_octree`) |
+| `--nx` / `--ny` | 64 / 256 | dimensions de la grille uniforme (ny > nx, Az ≈ 4) — mode uniform |
 | `--ra` | 1e6 | nombre de Rayleigh cible (basé sur Lz) |
 | `--pr` | 0.71 | nombre de Prandtl |
 | `--cs` | 0.1 | constante de Smagorinsky |
@@ -231,6 +232,20 @@ Expérimentations de stabilité antérieures et résolutions : voir
 | `--nu-start-mult` | 1.0 | rampe de viscosité initiale (≥1, décroissance exponentielle vers ν sur le spin-up) |
 | `--restart <path>` | — | snapshot binaire de départ (re-maillage bilinéaire si grille ≠) ; export automatique `snapshot.bin` en fin de chaque run |
 | `--snapshot-every` | 0 | export ATOMIQUE de `snapshot.bin` (tmp + rename) toutes les N étapes, pour reprendre une run interrompue via `--restart` ; 0 = désactivé |
+
+Options mode `--mode octree` (fusion Étape I — un seul binaire) :
+
+| Option | Défaut | Description |
+|---|---|---|
+| `--nx0` / `--ny0` | 64 / 256 | dimensions du domaine grossier (grille L0) |
+| `--bl-width` | 8 | largeur de BL fine (cellules grossières) par paroi verticale |
+| `--levels` | 2 | nombre de niveaux : 2 = config V2 (L0+L1), 3 = escalier tanh V6 (bande L2 dx/4) |
+| `--odd-exact` | off | variante rescaling ξ_odd exacte (½·τ⁻_fin/τ⁻_grossier, plan octree §1.2) |
+
+Les options communes (`--ra`, `--pr`, `--steps`, `--sample-*`, `--utarget`,
+`--nu`, `--restart`, `--snapshot-every`, `--jobs`, `--dynamic-smag`,
+`--smag-alpha`, `--nu-sm-min`, `--eta-test`) s'appliquent aux deux modes ;
+les options uniformes sont ignorées en mode octree et vice-versa.
 
 ### Parallélisation multi-thread (`--jobs N`)
 

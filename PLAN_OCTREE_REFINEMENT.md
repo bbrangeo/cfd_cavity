@@ -119,7 +119,13 @@ jamais une valeur globale.
   garde-fou τ_floor calculé avec ν_lu LOCAL par niveau (cf. §1.3 : le grossier
   est le limiteur).
 
-## 2. Architecture proposée (crate séparé)
+## 2. Architecture proposée (crate séparé — **obsolète : fusion Étape I**)
+
+> **Note 2026-10-31** : le crate séparé a existé (`cfd_cavity_octree`) puis a
+> été **fusionné dans le crate racine** (Étape I, commit `6e45c6f`) — un seul
+> binaire `cavity_les --mode uniform|octree`, modules octree dans `src/octree/`.
+> L'architecture ci-dessous décrit la découpe logique des modules, conservée
+> à l'identique dans `src/octree/`.
 
 **NE PAS modifier le crate uniforme validé** (`cfd_cavity`) : nouveau crate
 `cfd_cavity_octree` réutilisant les briques via modules partagés (workspace Cargo) :
