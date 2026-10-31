@@ -53,6 +53,14 @@ use crate::smag::compute_dynamic_sgs_level;
 use oxiphysics_lbm::lattice::D2Q9_VELOCITIES;
 use oxiphysics_lbm::thermal_lbm::{feq, geq};
 
+/// Étape H (avis oracle anti-divergence Ra=1e10) : constante de temps de la
+/// rampe de viscosité exponentielle ν_eff = ν·(1 + (mult−1)·exp(−s/τ_ramp)).
+/// ≈ 1000 pas : la rampe est terminée à ~5·τ_ramp ≈ 5000 pas (exp(−5) ≈ 0.7 %
+/// du surplus), bien avant la fenêtre de moyennage (sample-start défaut
+/// 100k) et sans rechute au plancher τ = 0.506 (le piège de la rampe
+/// linéaire : τ retombe en fin de rampe alors que ν_t n'a pas poussé).
+const NU_TAU_RAMP: f64 = 1000.0;
+
 /// Solveur octree 2 niveaux (Étape A, porte V1 — inchangé).
 pub struct OctreeSolver {
     pub grid: OctreeGrid,
@@ -193,8 +201,9 @@ pub struct CavitySolver {
     /// Étape H : multiplicateur de viscosité initiale (rampe anti-overshoot,
     /// défaut 1.0 = chemin bitwise identique — port crate uniforme).
     pub nu_start_mult: f64,
-    /// Étape H : durée de la rampe (port crate uniforme, solver.rs l.194-195
-    /// : 10 % du nombre de zones verticales, bornée [200, 2000] pas).
+    /// Étape H : durée de la rampe de flottabilité (filet P3, port crate
+    /// uniforme l.194 : max(2000, ny0/10) pas — avis oracle : spin-up plus
+    /// doux à Ra élevé, borné bas à 2000 pour durer ≥ la rampe ν (5·τ_ramp)).
     pub spin_up_steps: usize,
     /// Compteur de pas (rampe de viscosité, Étape H ; remis à zéro par
     /// `set_from_snapshot`, même sémantique que le crate uniforme).
@@ -250,10 +259,15 @@ impl CavitySolver {
     ///   plancher pour grilles fines type SND) — τ⁺ proche de 0.5 donne un
     ///   WARNING sur l'octree (pas d'assert, contrairement au crate uniforme :
     ///   l'utilisateur a choisi explicitement de descendre sous le plancher) ;
-    /// - `nu_start_mult` (--nu-start-mult) : rampe exponentielle de la
-    ///   viscosité initiale vers ν sur `spin_up_steps` pas (port bitwise de
-    ///   `ramp_nu_alpha`, solver.rs l.390-410) ; défaut 1.0 = chemin bitwise
-    ///   identique (ν_eff = ν exactement à chaque pas).
+    /// - `nu_start_mult` (--nu-start-mult) : rampe EXPONENTIELLE de la
+    ///   viscosité initiale ν_eff = ν·(1 + (mult−1)·exp(−step/τ_ramp)),
+    ///   τ_ramp ≈ 1000 pas (const NU_TAU_RAMP) — avis oracle anti-divergence
+    ///   Ra=1e10 : décroissance exponentielle (pas linéaire, pour éviter la
+    ///   rechute au plancher τ = 0.506 en fin de rampe), UNIFORME sur les 3
+    ///   niveaux (ratios ν 1/2/4 préservés ⇒ ξ inchangé), terminée à
+    ///   ~5·τ_ramp ≈ 5000 pas (≪ sample-start). Filet P3 : rampe beta
+    ///   linéaire sur `spin_up_steps` = max(2000, ny0/10) pas. Défaut
+    ///   mult = 1.0 = chemin bitwise identique (early-return).
     ///
     /// ⚠️ L'assertion dure τ⁺ ≥ 0.506 du crate uniforme (chemin calage) est
     /// un WARNING ici (plan §1.3 : le plancher ν ≥ 0.002 reste tenable en TRT
@@ -422,7 +436,7 @@ impl CavitySolver {
             // Étape H : rampe de viscosité (port crate uniforme) — durée 10 %
             // des zones verticales bornée [200, 2000] pas (solver.rs l.194-195).
             nu_start_mult: nu_start_mult.max(1.0),
-            spin_up_steps: ((ny0 / 10).max(200)).min(2000),
+            spin_up_steps: ((ny0 / 10).max(2000)),
             time_step: 0,
             beta_eff_coarse,
             beta_eff_fine: 0.5 * beta_eff_coarse,
@@ -554,22 +568,41 @@ impl CavitySolver {
         }
     }
 
-    /// Rampe anti-overshoot de viscosité/diffusivité (Étape H — port bitwise
-    /// du `ramp_nu_alpha` du crate uniforme, solver.rs l.390-410) : ν effectif
-    /// élevé au départ (×nu_start_mult), décroissant exponentiellement vers ν
-    /// moléculaire sur `spin_up_steps` pas ; α suit la même rampe. Défaut
-    /// nu_start_mult = 1.0 : ν_eff = ν EXACTEMENT (powf(ν/ν) = 1 bitwise),
-    /// chemin identique aux runs existantes.
+    /// Rampe anti-overshoot de viscosité/diffusivité (Étape H, avis oracle
+    /// anti-divergence Ra=1e10) : décroissance EXPONENTIELLE
+    ///   ν_eff = ν·(1 + (nu_start_mult − 1)·exp(−step/τ_ramp)),  τ_ramp ≈ 1000 pas,
+    /// α suit la même rampe (même multiplicateur). Trois contraintes :
+    /// 1. rampe UNIFORME sur les 3 niveaux : les mêmes ν_eff/α_eff entrent
+    ///    dans τ L0/L1/L2 (ratios ν 1/2/4 préservés ⇒ ξ et les sous-pas
+    ///    télescopiques inchangés — des rythmes de décroissance différents
+    ///    par niveau fausseraient le rescaling) ;
+    /// 2. décroissance EXPONENTIELLE (PAS linéaire — le piège de la rampe
+    ///    linéaire est la rechute : τ retombe au plancher 0.506 en fin de
+    ///    rampe alors que ν_t n'a pas encore poussé) ;
+    /// 3. rampe terminée bien avant la fenêtre de moyennage : à
+    ///    5·τ_ramp ≈ 5000 pas il reste exp(−5) ≈ 0.7 % du surplus (≪
+    ///    sample-start défaut 100k ; WARNING main.rs si sample-start < 5000).
+    /// Défaut nu_start_mult = 1.0 : ν_eff = ν EXACTEMENT (1 + 0·exp ≡ 1),
+    /// chemin bitwise identique aux runs existantes (early-return).
     fn ramp_nu_alpha(&self, step: usize) -> (f64, f64) {
-        if step >= self.spin_up_steps || self.nu_start_mult == 1.0 {
+        if self.nu_start_mult == 1.0 {
             return (self.nu_lu, self.alpha_lu);
         }
-        let x = step as f64 / self.spin_up_steps as f64; // 0 → 1
-        let nu_start = self.nu_lu * self.nu_start_mult;
-        let nu_eff = nu_start * (self.nu_lu / nu_start).powf(x);
-        let alpha_start = self.alpha_lu * self.nu_start_mult;
-        let alpha_eff = alpha_start * (self.alpha_lu / alpha_start).powf(x);
-        (nu_eff, alpha_eff)
+        let m = 1.0 + (self.nu_start_mult - 1.0) * (-(step as f64) / NU_TAU_RAMP).exp();
+        (self.nu_lu * m, self.alpha_lu * m)
+    }
+
+    /// Filet P3 (avis oracle) : rampe de spin-up de la flottabilité, linéaire
+    /// 0 → beta sur `spin_up_steps` pas (port crate uniforme l.429-437).
+    /// Active UNIQUEMENT en mode rampe (nu_start_mult > 1.0) pour ne pas
+    /// modifier le chemin défaut des runs existantes (l'octree n'avait
+    /// jusqu'ici PAS de rampe beta) ; spin-up plus doux à Ra élevé.
+    /// Retourne le facteur multiplicatif de beta_eff (1.0 = hors rampe).
+    fn ramp_beta_factor(&self, step: usize) -> f64 {
+        if self.nu_start_mult == 1.0 || step >= self.spin_up_steps {
+            return 1.0;
+        }
+        step as f64 / self.spin_up_steps as f64
     }
 
     /// Un pas grossier complet de cavité (Étape B, plan §2.2 + §3.3) :
@@ -616,15 +649,21 @@ impl CavitySolver {
         let mut opt_nu_l0: Option<&[f64]> = None;
         let mut opt_al_l0: Option<&[f64]> = None;
         if self.dynamic_smag {
-            let tau_mol_l0 = 0.5 + 3.0 * self.nu_lu;
+            // Étape H : τ moléculaire SGS suit la MÊME rampe que la collision
+            // (avis oracle : incohérence τ collision vs τ SGS sinon). En
+            // défaut (mult = 1.0), nu_eff = nu bitwise ⇒ identique.
+            let tau_mol_l0 = 0.5 + 3.0 * nu_eff;
             let (nu_t, alpha_t, cnu_mean, cnu_max, ck_mean, ck_max) =
                 compute_dynamic_sgs_level(
                     &self.coarse,
                     tau_mol_l0,
                     self.smag_alpha,
                     self.eta_test,
-                    self.nu_lu,
-                    self.alpha_lu,
+                    // Étape H : ν/α moléculaires ramés — la base des ν_t/α_t
+                    // locaux ET des planchers (nu_sm_min·mol, τ_floor−mol)
+                    // doit être la même que la collision du même pas.
+                    nu_eff,
+                    alpha_eff,
                     self.nu_sm_min,
                 );
             self.nu_t_pre_coarse = nu_t;
@@ -638,7 +677,10 @@ impl CavitySolver {
         }
 
         // --- 1. Niveau L0 (force Guo, CL crate uniforme) ---
-        let beta_c = self.beta_eff_coarse;
+        // Étape H (filet P3) : rampe de spin-up de la flottabilité, linéaire
+        // 0 → beta sur spin_up_steps pas — active UNIQUEMENT en mode rampe
+        // (nu_start_mult > 1.0), facteur 1.0 sinon (chemin défaut inchangé).
+        let beta_c = self.beta_eff_coarse * self.ramp_beta_factor(self.time_step);
         let jobs = self.jobs;
         collide_cavity(
             &mut self.coarse,
@@ -669,11 +711,16 @@ impl CavitySolver {
         // 2 sous-pas L2 (dt_L2 = dt_L1/2) → restriction L2→L1 → L1 sp2 →
         // restriction L1→L0 ---
         // Étape H : τ rampe (2·ν_eff, 4·ν_eff) au lieu des τ fixes.
-        let beta_f = self.beta_eff_fine;
-        let beta_sub = 0.25 * self.beta_eff_coarse; // §1.3 : /2 par niveau
+        // Filet P3 : rampe beta uniforme sur les niveaux (même facteur →
+        // ratios beta 1/2/4 préservés, u_scale identique par niveau).
+        let beta_ramp = self.ramp_beta_factor(self.time_step);
+        let beta_f = self.beta_eff_fine * beta_ramp;
+        let beta_sub = 0.25 * self.beta_eff_coarse * beta_ramp; // §1.3 : /2 par niveau
         // Étape D : τ moléculaires effectifs des niveaux fins (2ν, 4ν).
-        let tau_mol_l1 = 0.5 + 3.0 * 2.0 * self.nu_lu;
-        let tau_mol_l2 = 0.5 + 3.0 * 4.0 * self.nu_lu;
+        // Étape H : les τ moléculaires SGS suivent la MÊME rampe que les
+        // collisions (2·ν_eff, 4·ν_eff) — uniforme sur les 3 niveaux.
+        let tau_mol_l1 = 0.5 + 3.0 * 2.0 * nu_eff;
+        let tau_mol_l2 = 0.5 + 3.0 * 4.0 * nu_eff;
         let (smag_alpha, eta_test, nu_sm_min) =
             (self.smag_alpha, self.eta_test, self.nu_sm_min);
         let dynamic = self.dynamic_smag;
@@ -689,8 +736,9 @@ impl CavitySolver {
                     tau_mol_l1,
                     smag_alpha,
                     eta_test,
-                    2.0 * self.nu_lu,
-                    2.0 * self.alpha_lu,
+                    // Étape H : ν/α moléculaires ramés (2·ν_eff, 2·α_eff).
+                    2.0 * nu_eff,
+                    2.0 * alpha_eff,
                     nu_sm_min,
                 );
                 block.nu_t_pre = nu_t;
@@ -734,8 +782,9 @@ impl CavitySolver {
                             tau_mol_l2,
                             smag_alpha,
                             eta_test,
-                            4.0 * self.nu_lu,
-                            4.0 * self.alpha_lu,
+                            // Étape H : ν/α moléculaires ramés (4·ν_eff, 4·α_eff).
+                            4.0 * nu_eff,
+                            4.0 * alpha_eff,
                             nu_sm_min,
                         );
                         sub.nu_t_pre = nu_t;

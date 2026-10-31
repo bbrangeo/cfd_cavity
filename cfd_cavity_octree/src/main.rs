@@ -313,11 +313,22 @@ fn main() {
         println!("Étape H : calage ν via utarget = {}", args.utarget);
     }
     if args.nu_start_mult > 1.0 {
+        // Étape H : rampe exponentielle (τ_ramp ≈ 1000 pas, terminée à
+        // ~5000 pas) + filet P3 : rampe beta linéaire sur spin_up_steps =
+        // max(2000, ny0/10) pas.
+        let spin_up = (args.ny0 / 10).max(2000);
         println!(
-            "Étape H : rampe de viscosité nu-start-mult = {} sur {} pas (spin-up)",
-            args.nu_start_mult,
-            ((args.ny0 / 10).max(200)).min(2000)
+            "Étape H : rampe de viscosité exponentielle nu-start-mult = {} (tau_ramp = 1000 pas, terminée ~5000 pas) + rampe beta linéaire sur {} pas (spin-up)",
+            args.nu_start_mult, spin_up
         );
+        // Contrainte 3 : la rampe ν (≈ 5000 pas) doit être terminée bien
+        // avant la fenêtre de moyennage.
+        if args.sample_start < 5000 {
+            eprintln!(
+                "WARNING : rampe de viscosité terminée ~5000 pas mais sample-start = {} : augmentez --sample-start (> 5000) pour ne pas moyenner pendant la rampe",
+                args.sample_start
+            );
+        }
     }
 
     // Pool rayon configuré avant toute boucle parallèle (--jobs N), même
