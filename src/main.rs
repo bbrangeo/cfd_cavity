@@ -6,19 +6,15 @@
 
 mod cli;
 mod octree;
-mod post;
-mod rng;
-mod snapshot;
-mod solver;
-#[cfg(test)]
-mod tests;
+mod uniform;
 
 use cli::{Args, Mode};
 use std::path::Path;
 use std::time::Instant;
 
-use post::TimeAverager;
-use solver::CavitySolver;
+use uniform::post::{self, TimeAverager};
+use uniform::snapshot;
+use uniform::solver::{self, CavitySolver};
 
 fn main() {
     let args = match cli::parse_args() {

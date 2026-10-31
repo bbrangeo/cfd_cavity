@@ -5,7 +5,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 
-use crate::solver::{CavitySolver, DELTA_T};
+use crate::uniform::solver::{CavitySolver, DELTA_T};
 
 /// Accumulateur de moyennes temporelles (champs et diagnostics).
 pub struct TimeAverager {

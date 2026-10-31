@@ -3,8 +3,8 @@
 use oxiphysics_lbm::lattice::{D2Q9_VELOCITIES, D2Q9_WEIGHTS};
 use oxiphysics_lbm::thermal_lbm::{feq, geq};
 
-use crate::snapshot;
-use crate::solver::{CavitySolver, DELTA_T, T_COLD, T_HOT};
+use crate::uniform::snapshot;
+use crate::uniform::solver::{CavitySolver, DELTA_T, T_COLD, T_HOT};
 
 const EPS: f64 = 1e-10;
 
@@ -500,7 +500,7 @@ fn nusselt_conduction_limit_near_one() {
             s.lbm.temperature[k] = t;
         }
     }
-    let nuc = crate::post::nusselt_hot(&s);
+    let nuc = crate::uniform::post::nusselt_hot(&s);
     let az = (s.ny() - 1) as f64 / (s.nx() - 1) as f64;
     assert!((nuc - az).abs() < 0.05, "Nu conductif = Az en normalisation hauteur, lu {nuc}");
 }
@@ -516,7 +516,7 @@ fn delta_t_is_one() {
 
 #[test]
 fn lilly_coefficient_clamps_on_zero_denominator_and_bounds() {
-    use crate::solver::lilly_coefficient;
+    use crate::uniform::solver::lilly_coefficient;
     // Dénominateur nul / négatif / non fini ⇒ garde-fou C = 0 (pas de NaN).
     assert_eq!(lilly_coefficient(1.0, 0.0), 0.0);
     assert_eq!(lilly_coefficient(1.0, -1e-12), 0.0);
@@ -530,7 +530,7 @@ fn lilly_coefficient_clamps_on_zero_denominator_and_bounds() {
 
 #[test]
 fn mixed_factor_alpha_half_is_geometric_mean() {
-    use crate::solver::mixed_factor;
+    use crate::uniform::solver::mixed_factor;
     // α = 0.5 ⇒ moyenne géométrique √(a·b) (Tab. 2.3).
     let (a, b) = (4.0, 9.0);
     let m = mixed_factor(a, b, 0.5);

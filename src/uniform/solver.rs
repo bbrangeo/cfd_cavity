@@ -11,7 +11,7 @@ use oxiphysics_lbm::lattice::{D2Q9_OPPOSITES, D2Q9_VELOCITIES, D2Q9_WEIGHTS, CS2
 use oxiphysics_lbm::thermal_lbm::{feq, geq, ThermalD2Q9};
 use rayon::prelude::*;
 
-use crate::rng::Rng;
+use crate::uniform::rng::Rng;
 
 /// Température paroi chaude (gauche) — normalisation thèse θc = +0.5.
 pub const T_HOT: f64 = 0.5;
