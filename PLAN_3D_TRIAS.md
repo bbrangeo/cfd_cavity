@@ -20,11 +20,21 @@ physique à porter.
 - Solveur LBM **D3Q19 + TRT + Guo + Smagorinsky** en 3D, backend GPU wgpu
   (réutilise l'infrastructure Étape A : pipelines collide/stream/macroscopic,
   ping-pong, offset FluidX3D).
-- Cavité différentiellement chauffée **3D**, Ra cible 1e8 → 1e9 (voire 1e10
-  si le GPU le permet).
-- **Comparaison à DNS Trias 3D** (références 3D de la littérature — à
-  préciser : Trias et al. cavité 3D Ra 1e8-1e11, cf. références 2D actuelles
-  Tab. 2.7 ; les valeurs 3D Nuc sont plus faibles que 2D à Ra fixé).
+- Cavité différentiellement chauffée **3D**, Ra cible 1e8 → 1e9.
+  **Cible : réplique Trias Case A (JFM 2011) = cavité AR=4** (largeur 1 ×
+  hauteur 4, **x1 périodique L1=2** — pas cubique : la référence visée est
+  Trias et al., JFM 686, qui traite l'AR=4 jusqu'à Ra=1e11). Cohérent avec
+  tout le chapitre 2D (256×1024 = AR4), et la dimension périodique est plus
+  simple en LBM (wrap, pas de bounce-back : 4 murs seulement, les 9 vitesses
+  à wz=0 se traitent exactement comme le D2Q9 actuel).
+- **Comparaison à DNS Trias 3D** (Trias, Soria, Oliva, Pérez-Segarra,
+  JFM 686, table 3 — Pr=0.71, latérales isothermes, horizontales
+  adiabatiques, clustering tanh(γ) non reproductible en LBM uniforme, comme
+  en 2D) : **Nuc 3D = 49.24 (Ra=6.4e8) vs Nuc 2D = 49.23** ; 101.70 vs
+  100.60 (1e10). **⚠️ Correction factuelle (cadrage Oracle 2026-11-01)** :
+  à AR=4, Nuc 3D n'est pas « plus faible » que 2D — il est légèrement
+  supérieur ; ce qui diffère 2D/3D est la **dynamique** (quasi-périodique vs
+  chaotique, σ des Nulocal), pas le Nuc moyen.
 - Claim visé : le modèle SGS a un **contenu physique réel en 3D** (ν_sm/ν
   rapporté, hiérarchie grille/modèle), contrairement au 2D où il ne
   stabilise que la BL.
@@ -41,15 +51,18 @@ physique à porter.
 | Grille | nx×ny | nx×ny×nz | mémoire : ×nz |
 | GPU | Étape A validée | même infrastructure | portage kernel (la structure wgpu reste) |
 
-## 3. Coût mémoire/calcul (estimation à confirmer)
+## 3. Coût mémoire/calcul (⚠️ corrigé 2026-11-01 — le plan initialement
+## sous-estimait ×3)
 
-- Ra=1e8 3D cavité cubique : grille ~128×128×128 = 2.1M nœuds × 19 pops
-  (f) + 19 (g) × 4 octets (f32) ≈ **320 Mo** — tient sur GPU (M1 Max 64 Go).
-- Ra=1e9 : ~256×256×256 = 16.8M nœuds ≈ **2.5 Go** — tient.
-- Ra=1e10 : ~512×512×512 = 134M nœuds ≈ **20 Go** — limite M1 Max, à évaluer
-  après G3 (mesure MLUPS réelle).
-- CPU j8 à titre de comparaison : ~30× plus lent — GPU obligatoire au-delà
-  de 1e8.
+L'architecture 2D réelle (`gpu.rs`) garde **3 jeux de populations** (f_in/
+f_out ping-pong + f_col, idem g) = **2×19×3×4 = 456 octets/nœud** (pas 152).
+- Ra=6.4e8 3D AR4 (Trias Case A) : grille LBM uniforme **96×384×192** =
+  7.1M nœuds ≈ **3.2 Go** — tient.
+- Grille affinée 128×512×256 = 16.8M nœuds ≈ **7.6 Go** — tient sur M1 Max
+  64 Go.
+- Ra=1e10 AR4 (Trias Case C) : ~61 Go f32 — **hors budget** : le plafond
+  LES 3D (V3) est Ra=1e9 sur 128×512×256, ou cubic 256³ (7.6 Go).
+- CPU j8 à titre de comparaison : ~30× plus lent — GPU obligatoire.
 
 ## 4. Étapes proposées (portes V1-V3, GPU-first — décision 2026-10-31)
 
@@ -78,21 +91,33 @@ physique à porter.
 
 ## 6. Risques
 
-1. **Précision f32 à 3D** : même parade FluidX3D (offset), mais f^neq plus
-   grand à Ra élevé — la porte V1 (1e6-1e8) protège.
-2. **Coût mémoire à 1e10** : 20 Go f32 — peut nécessiter D3Q15 (moins de
-   pops) ou grille asymétrique nz < nx.
-3. **Références 3D Trias** : vérifier les configs exactes (aspect ratio 1:1:1
-   vs 1:1:2, Pr, CL) avant V1 — les valeurs 2D ne sont pas transposables.
+1. **Précision f32 à 3D** : même parade FluidX3D (offset). La dérive 2D
+   (+1.45e-8/pas, linéaire, Nuc insensible au premier ordre — démontré sur
+   2M pas à 1e10) se transposera en 3D : run V1 ~0.5-1M pas → +0.7-1.5 % de
+   masse, acceptable. **Décision par garde-fou, pas par anticipation** : si
+   pente > 2 %/500k pas sur la run V1, renormalisation Σf périodique à V2
+   (aux flush de snapshot, pas dans le batch — elle casse le batching).
+2. **Coût mémoire à 1e10 AR4** : ~61 Go — hors budget ; V3 plafonné à
+   Ra=1e9 (128×512×256) ou cubic 256³.
+3. **Références 3D Trias** : config exacte confirmée (cadrage Oracle
+   2026-11-01, JFM 2011 table 1/3) : **AR=4, x1 périodique L1=2**, Pr=0.71,
+   latérales isothermes, horizontales adiabatiques, clustering tanh(γ) —
+   non reproductible en LBM uniforme (comme en 2D, où le bounce-back
+   halfway d'ordre 2 a tout de même donné +0.30 % à 1e10 : argument
+   réutilisable).
 4. **Mur β en 3D ?** : le forçage Guo porte sur 3 axes — le mur de
    compressibilité 2D pourrait différer ; à documenter dès V1 (ρ_dev vs β).
-5. **Pas de CPU de référence maison** : la validation repose sur les tests
-   1-pas (valeurs analytiques : conduction, équilibre, conservation) + la
-   comparaison DNS Trias — les 2 seuls garde-fous indépendants. Renforcer les
-   tests unitaires 3D (équilibre exact, masse, conduction pure) pour
-   compenser l'absence de run CPU de comparaison.
+5. **Pas de CPU de référence maison** : la validation repose sur les **5
+   tests 1-pas device** (équilibre exact, streaming uniforme, conduction
+   pure, conservation masse 10k, impulsion Guo analytique) + l'ancrage
+   Trias Case A (Nuc 49.24 ± 5 %) + le cross-check interne 2D/3D au même
+   Ra=6.4e8 (snapshot `ra6.4e8_256x1024` disponible).
 
 ## 7. Décision en attente
 
-Le scope exact (chapitre thèse complet vs perspective) sera décidé après la
-validation 2D complète (G5) et une lecture des références Trias 3D.
+~~Le scope exact (chapitre thèse complet vs perspective) sera décidé après la
+validation 2D complète (G5) et une lecture des références Trias 3D.~~
+**Levée 2026-11-01** : G5 close (toutes portes G1-G5 passées), Trias 3D lu
+(JFM 2011) — chapitre thèse complet visé, Étape V1 lancée sur branche
+`dev-3d` (cadrage Oracle : architecture `src/uniform3d/` copie-adapt,
+D3Q19 SoA flat, 5 tests device, Nuc 49.24 ± 5 % à Ra=6.4e8).
