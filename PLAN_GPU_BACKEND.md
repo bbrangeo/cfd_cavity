@@ -62,7 +62,7 @@ de la précision sur le non-équilibre.
 | G2 | La précision f32+offset suffit | idem à Ra=1e8 (f^neq plus grand) — écarts ≤ 2 % | **PASSÉE 2026-10-31** (0.045 %, dérive masse linéaire, VALIDATION_GPU_ETAPB_G2.md) |
 | G3 | Le gain est réel | MLUPS mesuré sur 64×256 et 256×1024 : ≥ 10× le CPU (32 MLUPS) | **PASSÉE 2026-10-31** (×9.4-9.7 sur 64×256, **×31-34 sur 256×1024** — 470-490 MLUPS, VALIDATION_GPU_ETAPC_G3.md ; déroulage + fusion 2 dispatches + batching + SoA) |
 | G4 | Le dynamique survit au GPU | smoke --dynamic-smag Ra=1e6 : κ_dyn ∈ [0, 0.04], pas de NaN | **PASSÉE 2026-10-31** (test 1 pas ≡ CPU à 1e-4, Nuc écart 0.005 %, κ_dyn_max = 0.0400 = clamp, 4 tests GPU verts, VALIDATION_GPU_ETAPD_G4.md ; coût perf ×3-×10 vs fixe, ~2× CPU j8 quand même) |
-| G5 | Ra=1e10 complet | Nuc vs CPU (55.20 fixe / 101.19 256×1024) à tolérance, run < 1 h | — |
+| G5 | Ra=1e10 complet | Nuc vs CPU (55.20 fixe / 101.19 256×1024) à tolérance, run < 1 h | **PASSÉE 2026-11-01** (fixe GPU 2M pas : **Nuc 101.49 vs CPU 101.19 = +0.30 %**, trace CPU au pas près au probe — 0.0002 % à 10k, **392 MLUPS = 22 min** ; dérive de masse f32 **linéaire** +1.45e-8/pas = +2.89 % sur 2M, Nuc non affecté ; dynamic GPU : Nuc 103.89 ± 1.92, κ_dyn ∈ [0, 0.04] sans NaN, 85 MLUPS = 1 h 43 — VALIDATION_GPU_ETAPE_G5.md ; ν_sm/ν non extraitable directement, critère SGS non conclusif) |
 
 ### G5 = campagne cible de thèse (décision 2026-10-31)
 
@@ -72,13 +72,21 @@ sur GPU** une fois le backend validé. Config cible :
 
 ```bash
 # 1. Référence GPU (fixe) — doit reproduire Nuc ≈ 101.19 (CPU, Trias 100.68)
+#    ⚠️ CORRECTION 2026-11-01 : --utarget 0.005 (PAS 0.002 — la config 0.002
+#    avorte sur le garde-fou max_u > 0.10 à ~8-20k pas) + restart depuis le
+#    snapshot CPU établi Ra=6.4e8 (même grille 256×1024), cf. log CPU
+#    output/logs/ra1e10.log l.14.
 cavity_les --mode uniform --backend gpu --nx 256 --ny 1024 --ra 1e10 \
-    --cs 0.1 --utarget 0.002 --steps 2000000 --restart <snapshot 6.4e8 ou 1e10 fixe> \
+    --cs 0.1 --utarget 0.005 --steps 2000000 \
+    --restart output/runs_uniforme/ra6.4e8_256x1024/snapshot.bin \
     --out output/gpu_ra1e10_fixe
 
-# 2. Campagne dynamique (levier 1 contre l'écart) — même grille, --dynamic-smag
+# 2. Campagne dynamique (levier 1 contre l'écart) — même grille, --dynamic-smag,
+#    restart depuis le snapshot FINAL de la run fixe (champ établi à 1e10 ;
+#    un dyn from scratch à 1e10 risquerait une phase de ramp-up divergente)
 cavity_les --mode uniform --backend gpu --nx 256 --ny 1024 --ra 1e10 \
-    --dynamic-smag --smag-alpha 0.5 --utarget 0.002 --steps 2000000 \
+    --dynamic-smag --smag-alpha 0.5 --utarget 0.005 --steps 2000000 \
+    --restart output/gpu_ra1e10_fixe/snapshot.bin \
     --out output/gpu_ra1e10_dyn
 ```
 

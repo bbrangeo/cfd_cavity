@@ -177,6 +177,8 @@ Le modèle mixte interpole entre Smagorinsky (exposant α) et une forme en qsm/�
 | fixe (Cs=0.1) | 55.20 | — | — | −44.9 % |
 | dyn_a4 (α-mult 4) | 52.66 | 0.91 | −4.6 % | −47.5 % |
 | dyn_a25 (α-mult 2.5) | 59.83 | 0.36 | +8.4 % | −40.3 % |
+| **GPU 256×1024 fixe (Cs=0.1)** | **101.49** | 1.94 | — | **+1.3 %** |
+| **GPU 256×1024 dyn (α=0.5)** | **103.89** | 1.92 | **+2.4 %** | **+3.7 %** |
 
 > **Campagne de suivi (décision 2026-10-31)** : refaire le dynSmag sur
 > **256×1024, Ra=1e10, sur GPU** après validation du backend (plan GPU §G5,
@@ -184,6 +186,17 @@ Le modèle mixte interpole entre Smagorinsky (exposant α) et une forme en qsm/�
 > Nuc 101.19 (fixe, −0.5 % vs Trias) — si le dynamique y retrouve Nuc ≈ 100
 > avec ν_sm/ν ∈ [0.48, 0.54], le claim est complété : l'écart −40/−47 % était
 > une limite de résolution, le modèle dynamique est correct sur grille résolue.
+>
+> **→ Résultat GPU (Étape G5, 2026-11-01, VALIDATION_GPU_ETAPE_G5.md)** :
+> sur 256×1024 le dynamique donne **Nuc 103.89 ± 1.92** (fixe GPU 101.49,
+> CPU 101.19) = **+2.4 % au-dessus du fixe seulement** (contre −4.6/+8.4 %
+> sur 96×384) et **+3.2 % vs Trias** : l'écart catastrophique −40/−47 % de
+> la grille sous-résolue **n'est pas reproduit** — la limite de résolution
+> est levée. Nuc reste hors de la fourchette thèse stricte (100.2–100.36)
+> de +3.7 %, et le ratio ν_sm/ν ∈ [0.48, 0.54] n'a pas pu être évalué
+> (grandeur non calculée par le code ; proxies : ν_t_max/ν = 22.6 % au pic
+> dyn vs 13.0 % fixe). Claim **partiellement complété** : « correct sur
+> grille résolue » oui, convergence fine vers la thèse non démontrée.
 
 - Hiérarchie **a4 < fixe < a25** cohérente avec le plancher ν_t ≥ 2.33ν
   (ν_t saturé à 1.167e-3 = 2.33·ν) : α-mult 2.5 amortit moins que le fixe,
