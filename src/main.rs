@@ -7,6 +7,7 @@
 mod cli;
 mod octree;
 mod uniform;
+mod uniform3d;
 
 use cli::{Args, Backend, Mode};
 use std::path::Path;
@@ -16,6 +17,8 @@ use uniform::gpu::GpuSolver;
 use uniform::post::{self, TimeAverager};
 use uniform::snapshot;
 use uniform::solver::{self, CavitySolver};
+use uniform3d::gpu::GpuSolver3D;
+use uniform3d::solver::CavitySolver3D;
 
 fn main() {
     let args = match cli::parse_args() {
@@ -35,6 +38,7 @@ fn main() {
     match args.mode {
         Mode::Uniform => run_uniform(args),
         Mode::Octree => run_octree(args),
+        Mode::Uniform3d => run_uniform3d(args),
     }
 }
 
@@ -760,6 +764,198 @@ PORTE V2 (écart Nuc ≤ 5 %) : {}",
     log_lines.push(summary);
 
     let _ = std::fs::write(out.join("progress.log"), log_lines.join("\n") + "\n");
+    println!("Artefacts écrits dans {}", out.display());
+}
+
+/// Solveur uniforme 3D D3Q19 (Étape V1, plan 3D Trias §4) — GPU uniquement.
+///
+/// Cavité DHC AR ≈ 4 : parois verticales x isothermes, horizontales y
+/// adiabatiques, profondeur z PÉRIODIQUE (L1 = 2, Trias Case A, JFM 2011).
+/// Ancre littéraire : Nuc = 49.24 ± 5 % à Ra = 6.4e8, Pr = 0.71.
+/// Pas de solveur CPU 3D : `CavitySolver3D` ne porte que le calage unités
+/// et les champs initiaux ; le pas de temps vit dans `GpuSolver3D`.
+fn run_uniform3d(args: Args) {
+    /// Garde-fou de stabilité : abort si max_u dépasse cette valeur.
+    /// Relevé à 0.13 (vs 0.10 en 2D) : le démarrage à froid 3D passe par un
+    /// transitoire de chute libre u_ff = √(β_eff·(ΔT/2)·lz) ≈ 0.111 à
+    /// Ra=6.4e8 sur 96×384 (calculable analytiquement, mesuré 0.106 au pas
+    /// 4000), avant que l'amortissement visqueux n'établisse le régime
+    /// permanent (max_u ≈ 0.19·u_scale ≈ 0.03). Le 2D n'a jamais traversé ce
+    /// cas (runs Ra≥6.4e8 redémarrées d'un snapshot, step 0 : u=0.033).
+    /// Ma_local au pic = 0.13·√3 ≈ 0.225, transitoire bref toléré par TRT
+    /// Λ=3/16 ; le garde-fou reste un abort gracieux AVANT divergence NaN.
+    const MAX_U_ABORT: f64 = 0.13;
+
+    println!("=== Cavité DHC 3D (LBM D3Q19 TRT + Guo + Smagorinsky, GPU wgpu) ===");
+    println!(
+        "Grille : {}×{}×{} (AR = {:.2}) | Ra = {:.3e} | Pr = {} | Cs = {} | Pr_t = {} | z PÉRIODIQUE (Trias Case A)",
+        args.nx,
+        args.ny,
+        args.nz,
+        (args.ny - 1) as f64 / (args.nx - 1) as f64,
+        args.ra,
+        args.pr,
+        args.cs,
+        args.pr_t
+    );
+    println!("Backend : GPU wgpu (Étape V1, plan 3D Trias — pas de solveur CPU 3D)");
+
+    let mut sim = CavitySolver3D::new(
+        args.nx,
+        args.ny,
+        args.nz,
+        args.ra,
+        args.pr,
+        args.cs,
+        args.pr_t,
+        args.utarget,
+        args.seed,
+        args.nu_start_mult,
+    );
+
+    let mut gpu = GpuSolver3D::from_solver(&sim).unwrap_or_else(|e| {
+        eprintln!("Erreur : {e}");
+        std::process::exit(7);
+    });
+    println!("Backend GPU initialisé : {}", gpu.adapter_name());
+
+    println!(
+        "Unités réseau : nu = {:.6} | alpha = {:.6} | beta_eff = {:.4e} | spin_up = {} pas",
+        sim.nu, sim.alpha, sim.beta_eff, sim.spin_up_steps
+    );
+
+    let n_nodes = args.nx * args.ny * args.nz;
+    let mut log_lines: Vec<String> = Vec::new();
+    // Moyennage Nuc/Nuf : somme + n d'échantillons (fenêtre sample_start→fin,
+    // même convention que le mode octree).
+    let mut nuc_sum = 0.0f64;
+    let mut nuf_sum = 0.0f64;
+    let mut nuc_n = 0usize;
+    let start = Instant::now();
+
+    for step in 0..args.steps {
+        // Pas GPU (2 dispatches fusionnés collide + stream_macro, batching
+        // 64 pas) — le readback GPU→CPU n'a lieu que les pas où les champs
+        // sont consommés (diagnostics / moyennage / dernier pas).
+        gpu.step(&sim);
+        let need_sync = step % args.progress_every == 0
+            || step + 1 == args.steps
+            || (step >= args.sample_start
+                && (step - args.sample_start) % args.sample_every == 0);
+        if need_sync {
+            if let Err(e) = gpu.sync_into(&mut sim) {
+                eprintln!("Erreur de lecture GPU au pas {step} : {e}");
+                std::process::exit(7);
+            }
+        }
+
+        // Moyennage Nuc/Nuf après sample_start (fenêtre sample_start→fin).
+        if step >= args.sample_start && (step - args.sample_start) % args.sample_every == 0 {
+            nuc_sum += sim.nusselt_hot();
+            nuf_sum += sim.nusselt_cold();
+            nuc_n += 1;
+        }
+
+        // Diagnostic de stabilité toutes les progress-every itérations.
+        if step % args.progress_every == 0 || step + 1 == args.steps {
+            let wmax = sim
+                .uy
+                .iter()
+                .fold(0.0f64, |m, &v| m.max(v.abs()));
+            let max_u = sim.max_u();
+            let nu_t_max = sim
+                .nu_t
+                .iter()
+                .fold(0.0f64, |m, &v| m.max(v.abs()));
+            let msg = format!(
+                "step {:>7} | w_max = {:.5} | max_u = {:.5} | Nuc = {:.4} | Nuf = {:.4} | masse = {:.6} | nu_t_max = {:.3e}",
+                step,
+                wmax,
+                max_u,
+                sim.nusselt_hot(),
+                sim.nusselt_cold(),
+                sim.total_mass() / n_nodes as f64,
+                nu_t_max
+            );
+            println!("{msg}");
+            log_lines.push(msg);
+
+            // Garde-fou max_u : sortie gracieuse AVANT divergence NaN
+            // (log de progression écrit directement ici, même pattern 2D).
+            if max_u > MAX_U_ABORT {
+                let ma_local = max_u * 3.0f64.sqrt();
+                let abort_msg = format!(
+                    "AVORT : max_u = {max_u:.5} dépasse le garde-fou {:.2} (Ma_local = max_u·√3 ≈ {ma_local:.3} > marge de sécurité)",
+                    MAX_U_ABORT
+                );
+                eprintln!("{abort_msg}");
+                log_lines.push(abort_msg.clone());
+                let out = Path::new(&args.out);
+                let _ = std::fs::create_dir_all(out);
+                let _ = post::write_log(&out.join("progress.log"), &log_lines);
+                std::process::exit(2);
+            }
+
+            if !sim.all_finite() {
+                eprintln!("DIVERGENCE détectée au pas {step} (valeurs non finies).");
+                let out = Path::new(&args.out);
+                let _ = std::fs::create_dir_all(out);
+                let _ = post::write_log(&out.join("progress.log"), &log_lines);
+                std::process::exit(2);
+            }
+        }
+    }
+
+    let elapsed = start.elapsed();
+    let mlups = args.steps as f64 * n_nodes as f64 / elapsed.as_secs_f64() / 1.0e6;
+    println!(
+        "Simulation terminée en {:.1} s ({:.1}k pas/s) | MLUPS = {:.1}",
+        elapsed.as_secs_f64(),
+        args.steps as f64 / elapsed.as_secs_f64() / 1000.0,
+        mlups
+    );
+
+    if nuc_n == 0 {
+        eprintln!("Aucun échantillon moyenné : sample_start ≥ steps ?");
+        std::process::exit(3);
+    }
+    let nuc_mean = nuc_sum / nuc_n as f64;
+    let nuf_mean = nuf_sum / nuc_n as f64;
+
+    // --- Verdict porte V1 (ancre littéraire Trias 3D : Nuc = 49.24 ± 5 %) ---
+    let nuc_ref = 49.24;
+    let ecart_pct = ((nuc_mean - nuc_ref) / nuc_ref).abs() * 100.0;
+    let portee_v1 = ecart_pct <= 5.0;
+
+    // Pente de masse : rapportée seulement (renormalisation = V2, hors scope).
+    let masse_finale = sim.total_mass() / n_nodes as f64;
+    let derive_masse_pct = (masse_finale - 1.0).abs() * 100.0;
+    let pente_masse = derive_masse_pct / (args.steps as f64 / 500_000.0);
+
+    let summary = format!(
+        "--- Bilan 3D (moyenné sur {nuc_n} échantillons, fenêtre {}→{}) ---
+Nuc = {nuc_mean:.4} | Nuf = {nuf_mean:.4} | ancre Trias 3D (Ra = {:.2e}) = {nuc_ref} | écart = {ecart_pct:.1} %
+Masse finale (moyenne/nœud) = {masse_finale:.6} | dérive = {derive_masse_pct:.2} % | pente ≈ {pente_masse:.2} %/500k pas
+Performance : MLUPS = {mlups:.1}
+PORTE V1 (écart Nuc ≤ 5 % + stabilité {steps} pas sans NaN) : {}",
+        args.sample_start,
+        args.steps,
+        args.ra,
+        if portee_v1 { "PASS" } else { "FAIL" },
+        steps = args.steps
+    );
+    println!("{summary}");
+    log_lines.push(summary);
+
+    let out = Path::new(&args.out);
+    if let Err(e) = std::fs::create_dir_all(out) {
+        eprintln!("Impossible de créer {} : {e}", out.display());
+        std::process::exit(4);
+    }
+    if let Err(e) = post::write_log(&out.join("progress.log"), &log_lines) {
+        eprintln!("Erreur d'écriture : {e}");
+        std::process::exit(5);
+    }
     println!("Artefacts écrits dans {}", out.display());
 }
 

@@ -1,9 +1,12 @@
 # Plan de développement — Solveur 3D D3Q19 GPU + comparaison DNS Trias
 
-> Statut : PLAN (non implémenté). Objectif de thèse noté le 2026-10-31 :
-> **vraie LES-LBM 3D avec GPU, comparaison à DNS Trias**. Déclenchement :
-> après la validation du backend GPU D2Q9 (Étapes B→E, PLAN_GPU_BACKEND.md) —
-> le kernel 3D se portera sur la même infrastructure wgpu.
+> Statut : **V1 PASSÉE (2026-11-01, `VALIDATION_3D_ETAPE_V1.md`)**. Objectif
+> de thèse noté le 2026-10-31 : **vraie LES-LBM 3D avec GPU, comparaison à
+> DNS Trias**. Déclenchement : après la validation du backend GPU D2Q9
+> (Étapes B→E, PLAN_GPU_BACKEND.md) — le kernel 3D se porte sur la même
+> infrastructure wgpu. Prochaines étapes : V2 (grille fine 128×512×256,
+> Nuc ± 2 %, Numax ≈ 171.9, restart 3D à brancher) puis V3 (dynamic SGS 3D,
+> Ra=1e9).
 
 ## 0. Pourquoi le 3D (résumé de la décision)
 
@@ -76,7 +79,7 @@ f_out ping-pong + f_col, idem g) = **2×19×3×4 = 456 octets/nœud** (pas 152).
 
 | # | Étape | Porte | Évidence minimale |
 |---|---|---|---|
-| 1 | Solveur 3D **GPU** (D3Q19, TRT, Guo, Smagorinsky) + tests unitaires 1-pas | V1 | Ra=1e6-1e8 GPU : Nuc vs référence 3D littérature (± quelques %), stabilité 200k+ pas, tests 1-pas vs valeurs analytiques (conduction, équilibre) |
+| 1 | Solveur 3D **GPU** (D3Q19, TRT, Guo, Smagorinsky) + tests unitaires 1-pas | V1 | **✅ PASSÉE 2026-11-01** : Ra=6.4e8 GPU 96×384×192, Nuc 49.98 vs Trias 49.24 (**+1.5 % ≤ 5 %**), 200k pas sans NaN, dérive masse 0.01 % (0.03 %/500k ≪ garde-fou 2 %), 62.8 MLUPS, 9 tests GPU verts (5×3D dont Guo analytique ratio 1.000) — `VALIDATION_3D_ETAPE_V1.md` |
 | 2 | Ra=1e8 3D DNS-like (grille résolue) | V2 | Nuc vs Trias 3D (grille qui résout la BL) |
 | 3 | Ra=1e9+ 3D LES (SGS actif, sous-résolution volontaire) | V3 | ν_sm/ν rapporté, sensibilité Cs, comparaison DNS Trias |
 

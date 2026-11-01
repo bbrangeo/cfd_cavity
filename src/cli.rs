@@ -12,6 +12,8 @@ pub enum Mode {
     Uniform,
     /// Solveur octree multi-niveaux (ancien crate `cfd_cavity_octree`).
     Octree,
+    /// Solveur uniforme 3D D3Q19 (Étape V1, plan 3D Trias — GPU uniquement).
+    Uniform3d,
 }
 
 /// Backend de calcul sélectionné par `--backend` (mode uniform uniquement).
@@ -35,6 +37,8 @@ pub struct Args {
     pub nx: usize,
     /// Nœuds en y (hauteur, Az = (ny-1)/(nx-1) ≈ 4).
     pub ny: usize,
+    /// Nœuds en z (profondeur, mode uniform3d uniquement, z PÉRIODIQUE).
+    pub nz: usize,
     /// Nombre de Rayleigh cible (basé sur la hauteur Lz).
     pub ra: f64,
     /// Nombre de Prandtl (air : 0.71).
@@ -109,6 +113,7 @@ impl Default for Args {
             backend: Backend::Cpu,
             nx: 64,
             ny: 256,
+            nz: 64,
             ra: 1.0e6,
             pr: 0.71,
             cs: 0.10,
@@ -145,12 +150,17 @@ const USAGE: &str = "\
 Usage: cavity_les [OPTIONS]
 
 Mode de solveur :
-  --mode <uniform|octree> solveur uniforme (défaut) ou octree multi-niveaux
+  --mode <uniform|octree|uniform3d>
+                          solveur uniforme (défaut), octree multi-niveaux ou
+                          uniforme 3D D3Q19 (Étape V1, plan 3D Trias — GPU
+                          uniquement, z périodique, ancre Trias Nuc = 49.24)
 
-Backend de calcul (mode --mode uniform uniquement) :
+Backend de calcul (modes --mode uniform|uniform3d) :
   --backend <cpu|gpu>     CPU rayon (défaut, référence bitwise) ou GPU wgpu
                           (Étape A, porte G1 — pas de temps uniforme en f32,
-                          critère : écart Nuc ≤ 1 % vs CPU)
+                          critère : écart Nuc ≤ 1 % vs CPU) ;
+                          mode uniform3d : GPU OBLIGATOIRE (V1 = pas de
+                          solveur CPU 3D)
 
 Options uniformes (mode --mode uniform) :
   --nx <usize>            largeur de la grille          [défaut: 64]
@@ -181,6 +191,14 @@ Options uniformes (mode --mode uniform) :
                           (0.5 = moyenne géométrique, Tab. 2.3)
   --nu-sm-min <f64>       borne νsm ≥ nu_sm_min·ν [défaut: -0.1]
   --eta-test <f64>        ratio filtre test η = Δ/Δ̃ [défaut: 2.0]
+
+Options 3D (mode --mode uniform3d, Étape V1 plan 3D Trias) :
+  --nz <usize>            profondeur de la grille (PÉRIODIQUE, L1=2 Trias
+                          Case A)                    [défaut: 64]
+  (autres champs : --nx/--ny/--ra/--pr/--cs/--pr_t/--steps/--sample-start/
+  --sample-every/--out/--utarget/--seed/--progress-every/--nu-start-mult) ;
+  hors scope V1 : --jobs, --alpha-mult, --restart, --nu, --snapshot-every,
+  --dynamic-smag, --smag-alpha, --nu-sm-min, --eta-test
 
 Options octree (mode --mode octree, ancien crate cfd_cavity_octree) :
   --nx0 <usize>           largeur grossière              [défaut: 64]
@@ -252,9 +270,10 @@ pub fn parse_args() -> Result<Args, String> {
             "mode" => match value.to_lowercase().as_str() {
                 "uniform" => args.mode = Mode::Uniform,
                 "octree" => args.mode = Mode::Octree,
+                "uniform3d" | "3d" => args.mode = Mode::Uniform3d,
                 other => {
                     return Err(format!(
-                        "--mode : 'uniform' ou 'octree' attendu, lu '{other}'"
+                        "--mode : 'uniform', 'octree' ou 'uniform3d' attendu, lu '{other}'"
                     ))
                 }
             },
@@ -269,6 +288,7 @@ pub fn parse_args() -> Result<Args, String> {
             },
             "nx" => args.nx = value.parse().map_err(|_| format!("--nx : entier attendu, lu '{value}'"))?,
             "ny" => args.ny = value.parse().map_err(|_| format!("--ny : entier attendu, lu '{value}'"))?,
+            "nz" => args.nz = value.parse().map_err(|_| format!("--nz : entier attendu, lu '{value}'"))?,
             "ra" => args.ra = value.parse().map_err(|_| format!("--ra : flottant attendu, lu '{value}'"))?,
             "pr" => args.pr = value.parse().map_err(|_| format!("--pr : flottant attendu, lu '{value}'"))?,
             "cs" => args.cs = value.parse().map_err(|_| format!("--cs : flottant attendu, lu '{value}'"))?,
@@ -359,6 +379,30 @@ pub fn parse_args() -> Result<Args, String> {
 
     if args.nx < 8 || args.ny < 8 {
         return Err("nx et ny doivent être ≥ 8".into());
+    }
+    // Mode uniform3d (Étape V1) : validations spécifiques AVANT les
+    // validations communes (nz ≥ 8, GPU obligatoire, options hors scope).
+    if args.mode == Mode::Uniform3d {
+        if args.nz < 8 {
+            return Err("mode uniform3d : nz doit être ≥ 8".into());
+        }
+        if args.backend == Backend::Cpu {
+            return Err(
+                "mode uniform3d : --backend cpu non supporté en V1 (pas de solveur CPU 3D) ; utilisez --backend gpu".into(),
+            );
+        }
+        for (flag, cond) in [
+            ("--jobs", args.jobs != 1),
+            ("--alpha-mult", args.alpha_mult != 1.0),
+            ("--restart", args.restart.is_some()),
+            ("--nu", args.nu.is_some()),
+            ("--snapshot-every", args.snapshot_every != 0),
+            ("--dynamic-smag", args.dynamic_smag),
+        ] {
+            if cond {
+                return Err(format!("mode uniform3d : {flag} hors scope V1 (réservez-le au mode uniform)"));
+            }
+        }
     }
     // Backend GPU : le noyau GPU porte Smagorinsky Cs fixe ET le dynamic
     // Smagorinsky (Étape D, porte G4 : kernels dyn1-dyn4 + collide_dyn,
