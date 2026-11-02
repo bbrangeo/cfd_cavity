@@ -385,15 +385,16 @@ fn collide(@builtin(global_invocation_id) gid: vec3<u32>) {
         + f_in[8u * n + k];
     let rho = 1.0 + rho_m1;
 
-    // Force de Boussinesq : fy = ρ·β_eff·(T − t_ref), évaluée aux champs du
-    // temps t — utilisée par la collision de CE pas. Le dispatch 2
-    // (correction de vitesse Guo éq. (16)) la recalcule localement depuis
-    // stock (même expression, même F — sémantique CPU) ; le buffer fy global
-    // est supprimé (Étape C). P1a : fy utilise le ρ reconstruit des
-    // décalages (1 + Σ f̃_i), cohérent avec feq ; ρ pleine magnitude ICI
-    // uniquement (flottabilité inchangée — le passage à ρ₀ dans fy est P1b,
-    // séparé pour que l'A/B contre le CPU permette de savoir ce qui a bougé).
-    let fy_node = rho * P.beta_eff * (temp - P.t_ref);
+    // Force de Boussinesq (P1b, ρ₀ dans la flottabilité) : fy =
+    // β_eff·(T − t_ref)·(1 + rho_m1), évaluée aux champs du temps t —
+    // utilisée par la collision de CE pas. Identique en arithmétique exacte
+    // à l'ancien ρ·β_eff·(T−t_ref) (le terme dominant ρ₀ = 1 absorbé, seul
+    // le petit ρ−1 = Σ f̃ multiplie — plus de grosse magnitude ρ dans la
+    // force). Le dispatch 2 (correction de vitesse Guo éq. (16)) recalcule
+    // localement depuis f_out avec la MÊME expression (même F — sémantique
+    // CPU) ; le buffer fy global est supprimé (Étape C). Formule STRICTEMENT
+    // identique au CPU (solver.rs : beta_eff·(T−t_ref)·(1 + (rho−1))).
+    let fy_node = P.beta_eff * (temp - P.t_ref) * (1.0 + rho_m1);
 
     // Populations d'entrée en DÉCALÉ (f̃_i = f_i − w_i, la physique) —
     // stride SoA : direction i à f_in[i·n + k]. AUCUN recollage W + f̃ :
@@ -730,12 +731,15 @@ fn stream_macro(@builtin(global_invocation_id) gid: vec3<u32>) {
         + g_out[7u * n + k] + g_out[8u * n + k];
     let rho = 1.0 + rho_m1;
     // Correction de vitesse Guo et al. 2002, éq. (16) : u_y += fy/(2ρ) —
-    // fy recalculé localement depuis le stock du temps t (même expression que
-    // la collision de CE pas — même F, sémantique CPU `update_macroscopic` ;
-    // le buffer fy global est supprimé).
+    // fy recalculé localement avec l'expression P1b (ρ₀ dans la flottabilité,
+    // identique en arithmétique exacte à l'ancien ρ·β_eff·(T−t_ref)) depuis
+    // f_out (même expression que la collision de CE pas — même F, sémantique
+    // CPU `update_macroscopic` ; le buffer fy global est supprimé). Formule
+    // STRICTEMENT identique au CPU. ρ pleine magnitude uniquement au
+    // dénominateur (division, inchangé).
     var ux = 0.0;
     var uy = 0.0;
-    let fy_node = rho * P.beta_eff * (temp - P.t_ref);
+    let fy_node = P.beta_eff * (temp - P.t_ref) * (1.0 + rho_m1);
     if (rho > 1e-12) {
         ux = mx / rho;
         uy = my / rho + 0.5 * fy_node / rho;
@@ -1215,22 +1219,24 @@ fn collide_dyn(@builtin(global_invocation_id) gid: vec3<u32>) {
     let k = iy * P.nx + ix;
     let n = n_tot();
 
-    let rho_stock = stock[4u * k + 0u];
     let ux = stock[4u * k + 1u];
     let uy = stock[4u * k + 2u];
     let temp = stock[4u * k + 3u];
 
-    // P1a (variables décalées) : ρ−1 = Σ f̃_i (somme des décalages), rho
-    // pleine magnitude uniquement pour fy (P1b séparé) et ρ·A. AUCUN
-    // recollage W + f̃ (le gros nombre ≈0.44 annulerait le signal f32).
-    // fy : flottabilité inchangée, ρ pleine magnitude stock (P1b séparé).
-    let fy_node = rho_stock * P.beta_eff * (temp - P.t_ref);
-
+    // P1b (ρ₀ dans la flottabilité) : fy = β_eff·(T − t_ref)·(1 + rho_m1)
+    // — identique en arithmétique exacte à l'ancien ρ_stock·β_eff·(T−t_ref)
+    // (le terme dominant ρ₀ = 1 absorbé, seul le petit ρ−1 = Σ f̃ multiplie
+    // — plus de grosse magnitude ρ dans la force). rho_m1 est la somme des
+    // DÉCALAGES f̃ (calculée ci-dessous, aucun recollage W + f̃ — le gros
+    // nombre ≈0.44 annulerait le signal f32). Formule STRICTEMENT identique
+    // au CPU (solver.rs : beta_eff·(T−t_ref)·(1 + (rho−1))) et au kernel
+    // `collide` (P.beta_eff·(temp − P.t_ref)·(1 + rho_m1)).
     let f0s = f_in[0u * n + k];
     let rho_m1 = f0s + f_in[1u * n + k] + f_in[2u * n + k] + f_in[3u * n + k]
         + f_in[4u * n + k] + f_in[5u * n + k] + f_in[6u * n + k] + f_in[7u * n + k]
         + f_in[8u * n + k];
     let rho = 1.0 + rho_m1;
+    let fy_node = P.beta_eff * (temp - P.t_ref) * (1.0 + rho_m1);
     let f1s = f_in[1u * n + k];
     let f2s = f_in[2u * n + k];
     let f3s = f_in[3u * n + k];

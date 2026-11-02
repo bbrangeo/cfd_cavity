@@ -1075,13 +1075,18 @@ fn collide_node(
         lambda_trt,
     } = *ctx;
 
-    // Force de Boussinesq : fy = rho · beta_eff · (T − t_ref), dirigée vers +y
-    // quand T > t_ref (chaud monte, gravité orientée −y). Convention de la
-    // crate : "positive upward" (gravity = +1), beta = beta_eff = g·β·ΔT.
+    // Force de Boussinesq (P1b, ρ₀ dans la flottabilité) :
+    //   fy = β_eff·(T − t_ref)·(1 + (ρ−1)), dirigée vers +y quand T > t_ref
+    // (chaud monte, gravité orientée −y). Identique en arithmétique exacte à
+    // l'ancien ρ·β_eff·(T−t_ref) (boussinesq_force crate, gravity = +1) :
+    // le terme dominant ρ₀ = 1 est absorbé, seul le petit (ρ−1) multiplie —
+    // la force ne contient plus la grosse magnitude ρ. ρ−1 est exact en f64
+    // (lemme de Sterbenz pour ρ ∈ [1/2, 2]). Formule STRICTEMENT identique
+    // au GPU (gpu.rs : P.beta_eff·(temp − P.t_ref)·(1 + rho_m1), Σ f̃ = ρ−1).
     // Stockée par nœud : la correction de vitesse de update_macroscopic
     // (Guo éq. (16)) doit réutiliser EXACTEMENT cette F, évaluée aux champs
     // du temps t — pas de recalcul après mise à jour.
-    let fy = oxiphysics_lbm::thermal_lbm::boussinesq_force(rho, beta_eff, 1.0, temp, t_ref);
+    let fy = beta_eff * (temp - t_ref) * (1.0 + (rho - 1.0));
     *fy_out = fy;
 
     // Équilibres des 9 directions (une seule fois par nœud).
