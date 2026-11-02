@@ -3,6 +3,16 @@
 > Date : 2026-11-01. Matériel : Apple M1 Max (Metal 4, backend GPU wgpu 30).
 > Branche `dev-gpu`, commit `2add1db` (poussé) — **campagne de runs pure :
 > aucune modification de code, aucun commit**. Portes G1-G4 PASSÉES.
+>
+> **⚠️ Révision 2026-11-02 (kernel décalé, commit `9b2451a`)** : les runs
+> fixe/dyn ont été **re-jouées à config identique** avec le kernel en
+> variables décalées f̃ = f − w_i (P1a). Résultats dans §2bis/§3bis ;
+> l'écart dyn-vs-fixe (+2.3 %) **persiste** avec la dérive de masse
+> éliminée (masse 0.9997 vs 1.029) — il est **intrinsèque au Smagorinsky
+> dynamique** dans cette configuration (cs_dyn_mean ≈ 0.0066 vs 0.1·cs
+> statique), **pas un artefact de masse**. L'hypothèse « 0.6-0.7 pt
+> d'artefact masse » est falsifiée ; le verdict dyn est robuste au
+> changement de kernel (2.29 % vs 2.36 % inter-kernels).
 
 ## 1. Protocole (config exacte + correction critique)
 
@@ -111,7 +121,53 @@ verdict sur le critère SGS. Le plan notait déjà pour le fixe CPU
 « ν_t/ν ≈ 13 % au pic » — valeur que le GPU fixe reproduit exactement
 (13.0 %), ce qui valide l'extraction.
 
-## 4. Dérive de masse f32 sur 2M pas — LE point G5
+## 2bis. Run 1bis — fixe GPU kernel décalé P1a (re-run config identique, commit `9b2451a`)
+
+Sortie `output/gpu_ra1e10_fixe_p1a2/`, fenêtre 500k→2M identique (15 000
+échantillons), σ sur 301 points progress-every 5000 :
+
+| Métrique | CPU (réf) | G5 anc. kernel | **P1a décalé** |
+|---|---|---|---|
+| **Nuc (moyenné)** | 101.1892 | 101.4924 (+0.30 %) | **101.3523 (+0.16 %)** |
+| Nuf | 101.2532 | 101.5152 | 101.3411 |
+| Nuc ± σ | ±0.86* | ±1.94 | **±1.80** |
+| w_max(z=0.5) | 0.06941 | 0.07025 (+1.2 %) | **0.06926 (−0.22 %)** |
+| wmax_uref | — | — | 0.25152 |
+| x_wmax_z05_h | — | — | 0.00391 (anomalie 1ᵉʳ nœud disparue) |
+| Masse (fin) | 0.999997 | 1.028921 | **0.999852** (dérive −7.4e-11/pas, **×195 mieux**) |
+| Avortement / NaN | aucun | aucun | aucun |
+
+**P1a améliore toutes les métriques** : écart vs CPU divisé par ~2,
+dispersion réduite, w_max quasi exact, dérive de masse éliminée.
+
+## 3bis. Run 2bis — dynamic GPU kernel décalé P1a (re-run config identique)
+
+Sortie `output/gpu_ra1e10_dyn_p1a2/`, restart snapshot final P1a2
+(comme la G5 dyn), fenêtre 500k→2M, 15 000 échantillons :
+
+| Métrique | G5 anc. kernel | **P1a décalé** |
+|---|---|---|
+| **Nuc (moyenné)** | 103.8888 (σ 1.92) | **103.6781 (σ 1.87)** |
+| Δ vs fixe P1a 101.3523 | — | **+2.29 %** (~1.2σ) |
+| Nuf | 103.4537 | 103.3622 |
+| w_max(z=0.5) | 0.06947 | 0.06886 |
+| wmax_uref | — | 0.25009 |
+| Masse (fin) | 1.057832 | **0.999711** (aucune dérive) |
+| cs_dyn_mean / max | 0.0064 / 0.0400 | 0.0066 / 0.0400 (clamp actif) |
+| Avortement / NaN | aucun | aucun, run complète 2M pas |
+
+**L'écart dyn-vs-fixe persiste à +2.3 % avec la dérive de masse
+éliminée** (0.9997 vs 1.058) : il est **intrinsèque à la procédure
+dynamique** dans cette configuration, pas un artefact de précision.
+Cohérence inter-kernels (2.29 % vs 2.36 %) : le verdict dyn est robuste.
+
+## 4. Dérive de masse f32 sur 2M pas — LE point G5 (ancien kernel ; réglé par P1a)
+
+> **Révision 2026-11-02** : ce point concernait l'ancien kernel. Le kernel
+> décalé P1a (§2bis/§3bis) **élimine la dérive** : −7.4e-11/pas (fixe),
+> masse 0.9997-0.9999 après 2M pas. La question de la renormalisation
+> périodique reste ouverte pour la 3D tant que le kernel 3D n'a pas été
+> porté (V2) — même défaut pleine magnitude à corriger au passage.
 
 Courbe masse du progress.log (points tous les 5 000 pas, lissage sans
 accident) :
@@ -151,13 +207,17 @@ le 85.1 réel inclut le readback/moyennage sur run longue).
 |---|---|---|
 | fixe GPU : Nuc ≈ 101.19 ± ≤2 % | 101.49 (+0.30 %), trace CPU au pas près (probe 0.0002 % à 10k) | ✅ PASSÉ |
 | fixe GPU : run < 1 h | 22 min | ✅ PASSÉ |
-| dérive de masse f32 sur 2M pas : linéaire ou explosive ? | **Linéaire** (+1.446e-8/pas, +2.89 % total), Nuc non affecté | ✅ documenté (point G5) |
-| dyn GPU : Nuc ≈ 100 ± σ raisonnable | 103.89 ± 1.92 (+3.7 % vs C2D2, +2.4 % vs fixe GPU) | ⚠️ PARTIEL |
+| dérive de masse f32 sur 2M pas : linéaire ou explosive ? | **Linéaire** (+1.446e-8/pas, +2.89 % total), Nuc non affecté ; **réglé par P1a (kernel décalé : −7.4e-11/pas, ×195)** | ✅ documenté puis réglé |
+| dyn GPU : Nuc ≈ 100 ± σ raisonnable | 103.89 ± 1.92 (+3.7 % vs C2D2, +2.4 % vs fixe GPU) ; **révisé P1a : 103.68 ± 1.87 (+2.29 % vs fixe 101.35), robuste inter-kernels** | ⚠️ PARTIEL → écart intrinsèque au dynamique, pas artefact masse |
 | dyn GPU : ν_sm/ν ∈ [0.48, 0.54] | non extraitable directement (§3.1) ; proxies hors gamme | ⚠️ non conclusif |
 | dyn GPU : κ_dyn ∈ [0, 0.04], pas de NaN, run complète | κ_dyn_mean 0.017, κ_dyn_max 0.04 (clamp), 2M pas sans incident | ✅ PASSÉ |
 
 **Verdict global : G5 PASSÉE sur la référence (fixe) et la stabilité f32 ;
 PASS PARTIEL sur le levier dynamique.**
+**Révision 2026-11-02 : le verdict révisé (kernel décalé P1a, §2bis/§3bis)
+confirme le PARTIEL avec une cause établie — écart intrinsèque au
+Smagorinsky dynamique (+2.3 %, robuste inter-kernels), pas un artefact de
+masse ni de précision.**
 
 ## 7. Implication thèse (claim complété ou non)
 
@@ -171,6 +231,11 @@ PASS PARTIEL sur le levier dynamique.**
 - **Ce qui ne l'est pas** : Nuc dyn = 103.89 reste hors de la fourchette
   thèse stricte (100.2–100.36) de +3.7 %, et le critère ν_sm/ν ∈ [0.48, 0.54]
   n'a pas pu être évalué (grandeur non calculée par le code — §3.1).
+- **Révision P1a (2026-11-02)** : l'écart dyn-vs-fixe (+2.3 %) persiste
+  avec le kernel décalé (masse stable) — il est **intrinsèque au modèle
+  dynamique** (α=0.5, cs_dyn_mean ≈ 0.0066), pas à la précision ni à la
+  masse. La piste d'un réglage du Smagorinsky dynamique (α, clamp) est
+  à explorer pour converger vers la fourchette thèse.
 - **Claim thèse reformulé (proposé)** : « le modèle de Smagorinsky dynamique
   est correct sur grille résolue (Nuc 103.9 vs fixe 101.5, +2.4 %) ; l'écart
   −40/−47 % observé sur 96×384 était une limite de résolution, non un défaut
@@ -180,11 +245,15 @@ PASS PARTIEL sur le levier dynamique.**
 
 ## 8. Runs et reproductibilité
 
-- Runs : `output/gpu_ra1e10_fixe_probe/` (pré-check 50k),
+- Runs (ancien kernel) : `output/gpu_ra1e10_fixe_probe/` (pré-check 50k),
   `output/gpu_ra1e10_fixe/` (2M, summary.json + progress.log + snapshot.bin),
   `output/gpu_ra1e10_dyn/` (2M, idem).
+- Runs (kernel décalé P1a, révision 2026-11-02) : `output/gpu_ra1e10_fixe_p1a2/`
+  (2M, config identique §2), `output/gpu_ra1e10_dyn_p1a2/` (2M, config
+  identique §3) ; sortie intermédiaire A/B 200k `output/gpu_ra1e10_fixe_p1a/`.
 - Logs : `output/logs/gpu_ra1e10_fixe_probe.log`, `output/logs/gpu_ra1e10_fixe.log`,
-  `output/logs/gpu_ra1e10_dyn.log`.
+  `output/logs/gpu_ra1e10_dyn.log` ; `output/logs/p1a_fixe_2m.log`,
+  `output/logs/p1a_dyn_2m.log`, `output/logs/p1a_ab_200k.log`.
 - Références : `output/runs_uniforme/ra1e10/` (CPU), `output/logs/ra1e10.log`,
   `output/runs_uniforme/ra6.4e8_256x1024/snapshot.bin` (restart).
 - Aucune modification de code (campagne pure) — commit `2add1db` intact.
