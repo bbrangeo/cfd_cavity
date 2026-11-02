@@ -62,6 +62,20 @@ fn run_uniform(args: Args) {
         args.pr_t,
         args.jobs
     );
+    // Garde-fou alpha-mult : quand α est amorti (α = α_phys·mult en jeu dans
+    // l'équation thermique), le cas simulé n'est PAS (Ra, Pr) mais
+    // (Ra_eff = Ra/alpha_mult, Pr_eff = Pr/alpha_mult) — β_eff dérive de
+    // α_phys seul (solver.rs l.137-143). Un run à Pr/Ra effectifs décalés
+    // ne doit plus passer inaperçu.
+    if args.alpha_mult != 1.0 {
+        let ra_eff = args.ra / args.alpha_mult;
+        let pr_eff = args.pr / args.alpha_mult;
+        let warn = format!(
+            "WARNING : --alpha-mult {} ≠ 1 : le cas réellement simulé est Ra_eff = {:.3e}, Pr_eff = {:.4} (β_eff dérive de α_phys seul ; α amorti en jeu dans l'équation thermique) — pas ({:.3e}, {})",
+            args.alpha_mult, ra_eff, pr_eff, args.ra, args.pr
+        );
+        eprintln!("{warn}");
+    }
     if args.backend == Backend::Gpu {
         println!("Backend : GPU wgpu (Étape A, porte G1 — pas de temps uniforme en f32)");
     }
@@ -170,6 +184,17 @@ fn run_uniform(args: Args) {
     let n_nodes = sim.nx() * sim.ny();
     let mut averager = TimeAverager::new(n_nodes);
     let mut log_lines: Vec<String> = Vec::new();
+    // Garde-fou alpha-mult : le warning de lancement est aussi poussé dans
+    // le progress.log (write_log) pour tracer le cas effectif dans les
+    // artefacts, pas seulement sur stderr.
+    if args.alpha_mult != 1.0 {
+        let ra_eff = args.ra / args.alpha_mult;
+        let pr_eff = args.pr / args.alpha_mult;
+        log_lines.push(format!(
+            "WARNING : --alpha-mult {} ≠ 1 : cas réellement simulé Ra_eff = {:.3e}, Pr_eff = {:.4} (pas Ra = {:.3e}, Pr = {})",
+            args.alpha_mult, ra_eff, pr_eff, args.ra, args.pr
+        ));
+    }
     let start = Instant::now();
 
     // --- Export périodique (--snapshot-every N, 0 = désactivé) ---
@@ -392,6 +417,26 @@ fn run_uniform(args: Args) {
     }
     let s_half = (s2_sum / n_nodes as f64).sqrt();
 
+    // --- Garde-fou alpha-mult : Ra/Pr effectifs (cf. warning au lancement) ---
+    // Ra_eff = Ra·α_phys/α = Ra/alpha_mult (β_eff dérive de α_phys seul,
+    // solver.rs) ; Pr_eff = ν/α_en_jeu = Pr/alpha_mult. Valeurs = ra/pr
+    // exactement quand alpha_mult = 1.
+    let alpha_mult = args.alpha_mult;
+    let ra_eff = args.ra / alpha_mult;
+    let pr_eff = args.pr / alpha_mult;
+
+    // Échelle de vitesse thèse U_ref = α_eff·√Ra_eff/Lz (α en jeu, incluant
+    // alpha_mult) — cohérent avec le cas réellement simulé : la référence
+    // Trias/Xin rapporte w_max/U_ref ≈ 0.223–0.230 (écart mesuré ≈ 0.25,
+    // discuté en thèse). Positions x_wmax normalisées par la HAUTEUR (ny−1)
+    // à côté de la normalisation par la largeur (nx−1) existante — la thèse
+    // utilise x/H.
+    let uref = (sim.alpha * ra_eff.sqrt()) / sim.lz;
+    let wmax_uref_mid = wmax_mid / uref;
+    let wmax_uref_075 = wmax_075 / uref;
+    let x_mid_h = x_mid * (args.nx - 1) as f64 / (args.ny - 1) as f64;
+    let x_075_h = x_075 * (args.nx - 1) as f64 / (args.ny - 1) as f64;
+
     // --- Exports ---
     let out = Path::new(&args.out);
     if let Err(e) = std::fs::create_dir_all(out) {
@@ -419,11 +464,18 @@ fn run_uniform(args: Args) {
             post::nusselt_volume(&sim),
             wmax_mid,
             x_mid,
+            x_mid_h,
             wmax_075,
             x_075,
+            x_075_h,
+            wmax_uref_mid,
+            wmax_uref_075,
             yplus,
             args.cs,
             args.ra,
+            ra_eff,
+            pr_eff,
+            alpha_mult,
             args.nx,
             args.ny,
             args.steps,

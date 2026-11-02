@@ -110,25 +110,44 @@ pub fn nusselt_cold(s: &CavitySolver) -> f64 {
     avg_grad * s.lz / DELTA_T
 }
 
-/// Nusselt volumétrique (par intération, référence croisée) :
-/// Nu = ⟨u_y·θ·Lz⟩_x + Lz/(ΔT)·⟨∂T/∂x⟩... version standard :
-/// Nu_vol = 1 + ⟨u_y·θ⟩·Lz/ΔT... implémente la forme par flux convectif.
+/// Nusselt volumétrique (référence croisée indépendante de l'estimateur
+/// pariétal et du choix de la liaison) : en régime établi, la divergence du
+/// flux total (convectif + diffusif) s'annule en moyenne, donc le flux net
+/// traversant toute coupe verticale (direction x, celle des parois
+/// isothermes) est le même et vaut le flux pariétal. D'où la forme standard
+///
+///   Nu_vol = (Lz/ΔT) · ⟨ u_x·θ/α − ∂θ/∂x ⟩_Ω
+///
+/// avec θ déjà adimensionné (±0.5, ΔT = 1), α la diffusivité thermique EN
+/// JEU (`s.alpha`, incluant `alpha_mult`), Lz = ny−1 l'échelle de longueur
+/// (même adimensionnalisation que Nu paroi) et ⟨·⟩_Ω la moyenne d'ensemble
+/// sur les nœuds INTÉRIEURS en x (1 ≤ ix ≤ nx−2, dérivée centrale) et sur
+/// TOUT iy (choix documenté : les parois horizontales adiabatiques sont
+/// incluses — u_x·θ ≈ 0 y est nul au premier ordre et ∂θ/∂x y est régulier).
+///
+/// En régime établi Nu_vol ≈ Nu_paroi (2ᵉ liaison) à quelques % près —
+/// contrôle sur le CSV ra1e8_val2 : Nu_vol = 30.46 vs Nu_paroi 30.36
+/// (+0.3 %). Remplace l'ancienne forme « 1 + ⟨u_y·θ⟩·Lz/ΔT » (flux vertical,
+/// direction sans paroi isotherme : identité non vérifiée, écrit à tort dans
+/// les summary.json).
 pub fn nusselt_volume(s: &CavitySolver) -> f64 {
     let nx = s.nx();
     let ny = s.ny();
-    // Nu = (Lz/ΔT) · (1/Lx) · ∫ (⟨u_y θ⟩ − α ∂⟨θ⟩/∂y) dy ... version simplifiée
-    // moyenne en x du flux vertical total :
-    let mut sum = 0.0;
-    for iy in 1..ny - 1 {
+    let n = (ny * (nx - 2)) as f64;
+    let mut sum_conv = 0.0;
+    let mut sum_grad = 0.0;
+    for iy in 0..ny {
         for ix in 1..nx - 1 {
             let k = s.idx(ix, iy);
             let theta = s.lbm.temperature[k]; // déjà θ (±0.5)
-            sum += s.lbm.uy[k] * theta;
+            sum_conv += s.lbm.ux[k] * theta / s.alpha;
+            // ∂θ/∂x dérivée centrale (Δx = 1)
+            let t_prev = s.lbm.temperature[s.idx(ix - 1, iy)];
+            let t_next = s.lbm.temperature[s.idx(ix + 1, iy)];
+            sum_grad += (t_next - t_prev) / 2.0;
         }
     }
-    let conv = sum / (((nx - 2) * (ny - 2)) as f64);
-    // Nu_conv = conv · Lz / ΔT ; Nu_total = Nu_conv + 1 (conduction de référence)
-    1.0 + conv * s.lz / DELTA_T
+    s.lz / DELTA_T * (sum_conv - sum_grad) / n
 }
 
 /// Recherche du max de |w| (uy) sur une ligne horizontale iy donnée.
@@ -315,6 +334,14 @@ pub fn write_vtk(path: &Path, s: &CavitySolver) -> std::io::Result<()> {
 }
 
 /// Résumé JSON final (à la main, sérialisation simple).
+///
+/// `alpha_phys` / `alpha_mult` : garde-fou alpha-mult — quand `alpha_mult ≠ 1`,
+/// le cas réellement simulé n'est PAS (Ra, Pr) mais
+/// (Ra_eff = Ra·α_phys/α, Pr_eff = ν/α) (l'α amorti est en jeu dans
+/// l'équation thermique, cf. solver.rs : β_eff dérive de α_phys seul).
+/// `ra_eff` et `pr_eff` sont TOUJOURS écrits (valeur = ra/pr quand
+/// alpha_mult = 1) : un run à Pr/Ra effectifs décalés ne passe plus
+/// inaperçu à la lecture du summary.
 #[allow(clippy::too_many_arguments)]
 pub fn write_summary_json(
     path: &Path,
@@ -323,22 +350,36 @@ pub fn write_summary_json(
     nu_vol: f64,
     wmax_mid: f64,
     x_mid: f64,
+    x_mid_h: f64,
     wmax_075: f64,
     x_075: f64,
+    x_075_h: f64,
+    wmax_uref_mid: f64,
+    wmax_uref_075: f64,
     yplus: f64,
     cs: f64,
     ra: f64,
+    ra_eff: f64,
+    pr_eff: f64,
+    alpha_mult: f64,
     nx: usize,
     ny: usize,
     steps: usize,
     n_samples: u64,
 ) -> std::io::Result<()> {
+    // U_ref = α·√Ra/Lz (α = diffusivité en jeu, incluant alpha_mult) —
+    // échelle de vitesse de la thèse (chute libre/√Pr) ; w_max/U_ref ≈ 0.25
+    // attendu (Trias/Xin : 0.223–0.230, écart discuté en thèse).
+    // Calculé côté main.rs (l'α effectif y est dérivé des unités réseau).
     let mut f = fs::File::create(path)?;
     writeln!(
         f,
         r#"{{
   "case": "differentially_heated_cavity_2d",
   "ra": {ra:e},
+  "ra_eff": {ra_eff:e},
+  "pr_eff": {pr_eff:.4},
+  "alpha_mult": {alpha_mult},
   "cs": {cs},
   "grid": [{{"nx": {nx}, "ny": {ny}}}],
   "aspect_ratio": {:.4},
@@ -349,8 +390,12 @@ pub fn write_summary_json(
   "nusselt_volume": {nu_vol:.4},
   "wmax_z05": {wmax_mid:.5},
   "x_wmax_z05": {x_mid:.5},
+  "x_wmax_z05_h": {x_mid_h:.5},
+  "wmax_z05_uref": {wmax_uref_mid:.5},
   "wmax_z075": {wmax_075:.5},
   "x_wmax_z075": {x_075:.5},
+  "x_wmax_z075_h": {x_075_h:.5},
+  "wmax_z075_uref": {wmax_uref_075:.5},
   "y_plus_hot": {yplus:.3},
   "references_thesis_tab27": {{
     "nuc_snd": 102.0,

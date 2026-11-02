@@ -4,7 +4,10 @@
 > Branche `dev-3d` — nouveau module `src/uniform3d/` (pas d'abstraction
 > partagée avec `src/uniform/`, chemin 2D bit-à-bit intact). Ancre
 > littéraire : **Trias et al. (JFM 686, 2011), Case A, Nuc = 49.24 (Ra=6.4e8,
-> AR=4, Pr=0.71, z périodique L1=2)**.
+> AR=4, Pr=0.71, z périodique L1=2)**. <!-- à vérifier : attribution exacte
+> Case A « 2007 (JFM 586) » vs « 2011 (JFM 686) » — le PDF JFM 586 (2007)
+> contient aussi les cases 3D A/B/C (Nū = 49.24 identique) ; confirmer avant
+> publication (passe librarian). -->
 
 ## 1. Protocole (config exacte + correction critique du garde-fou)
 

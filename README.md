@@ -1,7 +1,8 @@
 # Cavité différentiellement chauffée 2D — LBM D2Q9 TRT + Smagorinsky (LES)
 
-[![tests](https://img.shields.io/badge/cargo_test-22%2F22_passing-brightgreen)](#-démarrage-rapide)
-[![DNS](https://img.shields.io/badge/DNS_valid%C3%A9-%E2%89%A4_3.3%25_sur_3_Ra-success)](#-résultats-clés)
+[![tests](https://img.shields.io/badge/cargo_test-37_CPU_+_9_GPU_passing-brightgreen)](#-démarrage-rapide)
+[![DNS](https://img.shields.io/badge/DNS_valid%C3%A9-%E2%89%A4_3.4%25_sur_3_Ra-success)](#-résultats-clés)
+[![portes](https://img.shields.io/badge/portes-G1%E2%80%93G5_+_V1_3D_PASS%C3%89ES-success)](#-statut-des-portes)
 [![rust](https://img.shields.io/badge/rust-edition_2024-orange)](https://www.rust-lang.org)
 [![crate](https://img.shields.io/badge/oxiphysics--lbm-0.1.2-blue)](https://crates.io/crates/oxiphysics-lbm)
 [![rayon](https://img.shields.io/badge/parall%C3%A8le-rayon_d%C3%A9terministe-informational)](#-options-cli)
@@ -9,7 +10,7 @@
 > **Solver LBM D2Q9 TRT + LES Smagorinsky pour la convection naturelle en cavité
 > différentiellement chauffée (Az = 4, air, Boussinesq) — validé contre le DNS de
 > référence de Trias et al. ([JFM 586, 2007](https://www.cttc.upc.edu/downloads/DHC_AR4_2Dvs3D/JFM-DHC-paper.pdf))
-> à ≤ 3.3 % sur 3 Rayleigh (1e8 → 1e10).**
+> à ≤ 3.4 % sur 3 Rayleigh (1e8 → 1e10).**
 
 Benchmark de la thèse (§2.5, pages 65–71, Tab. 2.6 et 2.7).
 
@@ -18,6 +19,7 @@ Benchmark de la thèse (§2.5, pages 65–71, Tab. 2.6 et 2.7).
 ## 📑 Sommaire
 
 - [🎯 Résultats clés](#-résultats-clés)
+- [🚦 Statut des portes](#-statut-des-portes)
 - [🔬 Cas d'étude](#-cas-détude)
 - [⚙️ Méthode](#-méthode)
 - [🚀 Démarrage rapide](#-démarrage-rapide)
@@ -41,18 +43,38 @@ Convergence LBM vs DNS de référence Trias, Soria, Oliva & Pérez-Segarra
 
 | Quantité | Cible (Trias 2D) | Résultat LBM (final) | Verdict |
 |---|---|---|---|
-| Nuc @ 1e8 | 30.41 | 30.45 (128×511) | ✅ +0.1 % |
-| Nuc @ 6.4e8 | 49.23 | 50.89 (256×1024) | ✅ +3.3 % (plateau méthode) |
+| Nuc @ 1e8 | 30.41 | 30.45 (128×511) — **cas α×1.2 : Ra_eff 8.33e7 / Pr_eff 0.59, PAS Ra=1e8** | ⚠️ +0.1 % non comparable ; vs Trias(8.33e7) ≈ +5 % (re-run am1 à faire) |
+| Nuc @ 6.4e8 | 49.23 | 50.89 (256×1024) | ✅ +3.4 % (plateau méthode) |
 | Nuc @ 1e10 | 100.60 (100.68 h-moy.) | 101.19 (256×1024) | ✅ +0.5 % |
 | w_max(z=0.5)/U_CN | ≈ 0.223 en x*≈0.004 | ≈ 0.23 @ 6.4e8 ; 0.31 @ 1e10, x≥0.0157 | ⚠️ valeur 1e10 à discuter |
 | w_max(z=0.75) | ≈ 0.11 en x*≈0.005 | x ≥ 0.023 (borne maillage) | ⚠️ positions bornées par le 1er nœud |
 | S^1/2 (dθ/d(z/H) cœur) | 0.99 – 1.01 | 0.974 / 1.064 / 1.317 | ✅ 1e8–6.4e8 |
 | y+ première cellule | 0.55 – 1.11 | 0.63 / 0.63 / 1.67 | ✅ |
 
+> ⚠️ **Ligne Nuc @ 1e8 (30.45)** : cette valeur provient de la run 128×511
+> `ra1e8_val2` lancée avec `--alpha-mult 1.2` — le cas réellement simulé est
+> **Ra_eff = 8.33e7, Pr_eff = 0.59** (pas Ra=1e8, Pr=0.71 ; β_eff dérive de
+> α_phys seul). La comparaison « +0.1 % vs Trias(1e8) » est donc
+> **non comparable** : vs Trias(8.33e7) ≈ 29.0 (fit 0.2529·Ra^0.26),
+> l'écart réel est ≈ +5.0 % (paroi) à +5.4 % (summary). La re-run
+> `--alpha-mult 1` (cas Ra=1e8, Pr=0.71 exact) est à faire pour un écart
+> licite — cf. `VALIDATION_REF_Ra1e8_AM1.md`.
+
+## 🚦 Statut des portes
+
+| Porte | Contenu | Verdict |
+|---|---|---|
+| G1 (Étape A) | Backend GPU wgpu 2D, équivalence CPU/GPU 1 pas | ✅ PASSÉE ([VALIDATION_GPU_ETAPA_G1.md](VALIDATION_GPU_ETAPA_G1.md)) |
+| G2 (Étape B) | Perf GPU (batching, MLUPS) | ✅ PASSÉE ([VALIDATION_GPU_ETAPB_G2.md](VALIDATION_GPU_ETAPB_G2.md)) |
+| G3 (Étape C) | SoA / optimisations GPU | ✅ PASSÉE ([VALIDATION_GPU_ETAPC_G3.md](VALIDATION_GPU_ETAPC_G3.md)) |
+| G4 (Étape D) | Smagorinsky dynamique GPU + pre-checks runs longues | ✅ PASSÉE ([VALIDATION_GPU_ETAPD_G4.md](VALIDATION_GPU_ETAPD_G4.md)) |
+| G5 (Étape E) | Campagne cible de thèse : 2 runs GPU 256×1024 Ra=1e10 (fixe + dynamic), dérive de masse f32 | ✅ PASSÉE (fixe + f32 ; PARTIEL levier dynamique) ([VALIDATION_GPU_ETAPE_G5.md](VALIDATION_GPU_ETAPE_G5.md)) |
+| V1 3D | Solveur 3D D3Q19 GPU, Nuc = 49.98 vs ancre Trias 3D 49.24 (+1.5 %), 200k pas sans NaN | ✅ PASSÉE 2026-11-01 ([VALIDATION_3D_ETAPE_V1.md](VALIDATION_3D_ETAPE_V1.md)) |
+
 **Cadre retenu pour le mémoire** : démarche **LES LBM (Smagorinsky, Cs=0.1)**,
 validée contre le DNS de Trias et al. (2007) — la grille est assez fine pour que le
 modèle sous-maille soit peu actif (ν_t/ν = 5 % → 1.6 % en raffinant à 6.4e8), d'où la
-convergence 0.1–3.6 % vs Trias sur les 3 Ra. Le Smagorinsky joue alors son rôle
+convergence 0.1–3.4 % vs Trias sur les 3 Ra. Le Smagorinsky joue alors son rôle
 historique en LBM : amortisseur de stabilité à τ proche de 0.5 (Hou et al. 1996).
 
 Détails complets (curseur DNS/LES, smoke test) : [Validation détaillée](#-validation-détaillée).
@@ -84,7 +106,7 @@ Cavité fermée différentiellement chauffée, rapport de forme **Az = 4**, air
   `compute_turbulent_viscosity`, `y_plus`) issus de la crate
   [`oxiphysics-lbm` v0.1.2](https://crates.io/crates/oxiphysics-lbm)
   (module `thermal_lbm`, constantes `lattice::{D2Q9_WEIGHTS, D2Q9_VELOCITIES, D2Q9_OPPOSITES, CS2}`).
-- **Pas de temps maison** (`src/solver.rs`) : le `streaming_step` de la crate est
+- **Pas de temps maison** (`src/uniform/solver.rs`) : le `streaming_step` de la crate est
   périodique dans les deux directions (inadapté à une cavité fermée), donc :
 
   **Collision TRT (two-relaxation-time, Ginzburg et al. 2008) avec relaxation
@@ -287,7 +309,7 @@ d'origine est strictement inchangé.
 | `fields_mean.csv` | champs moyens : x, y, ux, uy, T, psi, nu_t |
 | `profiles_w.csv` | profils w(z=0.5·Lz) et w(z=0.75·Lz) vs x normalisé |
 | `snapshot.vti` | VTK XML ImageData (T, Ux, Uy) — Paraview/VisIt |
-| `summary.json` | résumé : Nuc, Nuf, w_max et positions, y+, références Tab. 2.7 |
+| `summary.json` | résumé : Ra/Ra_eff/Pr_eff/alpha_mult, Nuc, Nuf, Nu_vol, w_max et positions (x/largeur **et x/hauteur**), w_max/U_ref, y+, références Tab. 2.7 |
 | `progress.log` | progression (w_max, Nuc, Nuf, masse, nu_t_max) |
 
 ### Scripts de post-traitement
@@ -322,7 +344,7 @@ vraie LES (Cs=0.2, ν_t active, biais attendu). **Cadre retenu pour le mémoire 
 la démarche est une LES LBM (Smagorinsky, Cs=0.1)**, validée contre le DNS de
 référence de Trias et al. (2007) : la grille est assez fine pour que le modèle
 sous-maille soit peu actif (ν_t/ν = 5 % → 1.6 % en raffinant à 6.4e8), d'où la
-convergence 0.1–3.6 % vs Trias sur les 3 Ra. Le Smagorinsky joue alors son rôle
+convergence 0.1–3.4 % vs Trias sur les 3 Ra. Le Smagorinsky joue alors son rôle
 historique en LBM : amortisseur de stabilité à τ proche de 0.5 (Hou et al. 1996).
 
 ### Smoke test Ra=1e6
@@ -354,7 +376,7 @@ limitation méthode LBM uniforme, à documenter.
 3. **LES Smagorinsky standard** (Cs=0.10, constante CLI) vs modèle échelles
    mixtes de Sergent [2000] : la crate fournit `smagorinsky_omega` et les types
    dynamiques (`DynamicSmagorinsky::compute_cs_sq`, clamp [0, 0.04]) ; une
-   variante dynamique est possible en étendant `solver.rs`.
+   variante dynamique est possible en étendant `src/uniform/solver.rs`.
 4. **2D strict** : la thèse mentionne des parois latérales périodiques (3D
    tronqué) ; ici le domaine est strictement 2D (une cellule en profondeur).
 
@@ -405,6 +427,11 @@ pour traçabilité, repliées pour alléger la lecture.
 > 156×312, 144×318, 138×326) et 3D (A/B/C). Les valeurs de recalage 2D :
 > Nū = 49.23/66.19/100.60, Numax = 169.96/249.80/441.65, u2max = 2.22–2.23e-1,
 > u3max = 2.23–2.29e-1 ; 3D : Nū = 49.24/66.63/101.70 (≈1 % au-dessus du 2D).
+> <!-- à vérifier (attribution 2D vs 3D) : ces recalages sont extraits du PDF
+>      JFM 586 (2007) ; l'ancre 3D « Nuc = 49.24, Case A, z périodique L1=2 »
+>      utilisée par VALIDATION_3D_ETAPE_V1.md est attribuée à Trias et al.
+>      JFM 686 (2011) — confirmer quel jeu de valeurs (2D/3D, 2007/2011)
+>      correspond à quel papier avant publication. -->
 > Nu paroi corrigé (fix ×4) : **[VALIDÉ 2026-10-29]** Ra=1e8 → Nuc = 30.45 vs
 > 30.41 Trias 2D (écart 0.1 %) sur 128×511, 2M pas ; Ra=6.4e8 → 50.89 vs 49.23
 > (3.3 %) sur 256×1024 (convergence : 51.02/3.6 % sur 128×512, plateau de
@@ -466,6 +493,13 @@ pour traçabilité, repliées pour alléger la lecture.
   convection in an enclosed cavity*, JFM 586, 259–293, DNS 2D/3D cavité Az=4
   Pr=0.71 : benchmark principal (Nū = 30.41/49.23/100.60 aux
   Ra = 1e8/6.4e8/1e10) — [PDF officiel](https://www.cttc.upc.edu/downloads/DHC_AR4_2Dvs3D/JFM-DHC-paper.pdf).
+  <!-- à vérifier : le papier JFM 586 (2007) contient les deux configurations
+       2D (cases A2D/B2D/C2D) et 3D (cases A/B/C). Les cibles Tab. 2.7 de la
+       thèse (= Nū 2D ci-dessus) sont attribuées au papier 2007 ici, et
+       l'ancre 3D (Nuc = 49.24, Case A, z périodique L1=2) à Trias et al.
+       JFM 686 (2011) — l'attribution exacte « quelle valeur vient de quel
+       papier » est à confirmer par une passe librarian avant publication
+       (les deux jeux Nū 2D/3D sont très proches : 49.23 vs 49.24 à 6.4e8). -->
 - [Ginzburg 2008] Ginzburg, Verhaeghe & d'Humières — TRT, Λ = 3/16 optimal
   pour bounce-back (Comm. Comp. Phys. 3).
 - [Xin 1993] Xin & Le Quéré — SND spectrale Chebyshev 96×768, Ra=1e10.
