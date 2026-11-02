@@ -355,14 +355,16 @@ fn collide(@builtin(global_invocation_id) gid: vec3<u32>) {
         + f_in[16u * n + k] + f_in[17u * n + k] + f_in[18u * n + k];
     let rho = 1.0 + rho_m1;
 
-    // Force de Boussinesq : fy = ρ·β_eff·(T − t_ref), évaluée aux champs du
-    // temps t — utilisée par la collision de CE pas. Le dispatch 2 (correction
-    // de vitesse Guo éq. (16)) la recalcule localement depuis stock (même
-    // expression, même F — sémantique CPU). P1a : fy utilise le ρ reconstruit
-    // des décalages (1 + Σ f̃_i), cohérent avec feq ; ρ pleine magnitude ICI
-    // uniquement (flottabilité inchangée — le passage à ρ₀ dans fy est P1b,
-    // séparé pour que l'A/B contre le CPU permette de savoir ce qui a bougé).
-    let fy_node = rho * P.beta_eff * (temp - P.t_ref);
+    // Force de Boussinesq (P1b, ρ₀ dans la flottabilité) : fy =
+    // β_eff·(T − t_ref)·(1 + rho_m1), évaluée aux champs du temps t —
+    // utilisée par la collision de CE pas. Identique en arithmétique exacte
+    // à l'ancien ρ·β_eff·(T−t_ref) (le terme dominant ρ₀ = 1 absorbé, seul
+    // le petit ρ−1 = Σ f̃ multiplie — plus de grosse magnitude ρ dans la
+    // force). Le dispatch 2 (correction de vitesse Guo éq. (16)) recalcule
+    // localement avec la MÊME expression P1b (même F — sémantique CPU).
+    // Formule STRICTEMENT identique au 2D (uniform/gpu.rs : P.beta_eff·
+    // (temp − P.t_ref)·(1 + rho_m1)).
+    let fy_node = P.beta_eff * (temp - P.t_ref) * (1.0 + rho_m1);
 
     // Populations d'entrée en DÉCALÉ (f̃_i = f_i − w_i, la physique) —
     // stride SoA : direction i à f_in[i·n + k]. AUCUN recollage W + f̃ :
@@ -680,8 +682,9 @@ fn stream_macro(@builtin(global_invocation_id) gid: vec3<u32>) {
     let s16 = f_out[16u * n + k];
     let s17 = f_out[17u * n + k];
     let s18 = f_out[18u * n + k];
-    var rho = 1.0 + s0 + s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8 + s9
+    var rho_m1 = s0 + s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8 + s9
         + s10 + s11 + s12 + s13 + s14 + s15 + s16 + s17 + s18;
+    var rho = 1.0 + rho_m1;
     var mx = s1 - s2 + s7 - s8 + s9 - s10 + s11 - s12 + s13 - s14;
     var my = s3 - s4 + s7 + s8 - s9 - s10 + s15 - s16 + s17 - s18;
     var mz = s5 - s6 + s11 + s12 - s13 - s14 + s15 + s16 - s17 - s18;
@@ -693,12 +696,15 @@ fn stream_macro(@builtin(global_invocation_id) gid: vec3<u32>) {
         + g_out[15u * n + k] + g_out[16u * n + k] + g_out[17u * n + k]
         + g_out[18u * n + k];
     // Correction de vitesse Guo et al. 2002, éq. (16) : u_y += fy/(2ρ) —
-    // fy recalculé localement depuis le stock post-stream (même expression
-    // que la collision de CE pas — même F, sémantique CPU `update_macroscopic`).
+    // fy recalculé localement avec l'expression P1b (ρ₀ dans la flottabilité,
+    // identique en arithmétique exacte à l'ancien ρ·β_eff·(T−t_ref)) depuis
+    // g_out (même expression que la collision de CE pas — même F, sémantique
+    // CPU `update_macroscopic`). Formule STRICTEMENT identique au 2D. ρ
+    // pleine magnitude uniquement au dénominateur (division, inchangée).
     var ux = 0.0;
     var uy = 0.0;
     var uz = 0.0;
-    let fy_node = rho * P.beta_eff * (temp - P.t_ref);
+    let fy_node = P.beta_eff * (temp - P.t_ref) * (1.0 + rho_m1);
     if (rho > 1e-12) {
         ux = mx / rho;
         uy = my / rho + 0.5 * fy_node / rho;
