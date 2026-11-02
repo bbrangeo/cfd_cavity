@@ -151,11 +151,23 @@ PLAN_ECHELLES_MIXTES_DYNAMIQUES §5.2/§6 : β* ∈ [4.08, 5.43]e-4,
 base grossière — les β_eff 3D uniforme (3.1e-5 à 8.4e-5) sont 5-15×
 sous la borne, et l'extrapolation ρ_dev ∝ β donne ρ_dev ~2e-5 à Ra=2e9,
 deux ordres de grandeur sous la zone de danger. **Le plancher TRT (pas
-le mur β) est la contrainte limitante en 3D uniforme.** Le risque n°4 du
-plan (« ρ_dev vs β à documenter dès V1 ») reste ouvert : le mode
-uniform3d ne logge pas ρ_dev (contrairement au mode octree,
-`max_rho_dev` main.rs l.738) — à ajouter et rapporter avant toute
-extension de Ra.
+le mur β) est la contrainte limitante en 3D uniforme.**
+
+**→ Risque n°4 du plan REFERMÉ (2026-11-02, commit `3935f81`)** : le mode
+uniform3d logge désormais `rho_dev` (= max|ρ−1|) dans progress.log.
+Mesures en **régime établi** (fin de run, readback) :
+
+| Run | Ra | β_eff | ρ_dev (fin, régime établi) |
+|---|---|---|---|
+| V2 (400k pas) | 6.4e8 | 3.14e-5 | **~2.1e-5** (masse 0.999979) |
+| V3 (400k pas) | 1e9 | 4.22e-5 | **~2.7e-5** (masse 0.999973) |
+
+Ratio ρ_dev V3/V2 = 1.35 ≈ ratio β_eff = 1.34 — **cohérent avec
+ρ_dev ∝ β linéaire en 3D uniforme**, extrapolation confirmée. À ce
+rythme, ρ_dev(Ra=2e9) ≈ 4e-5 et ρ_dev(1e10) ≈ 1.5e-4 — deux ordres de
+grandeur sous la zone de danger octree (β* ≥ 4.08e-4). **Le plancher TRT
+reste la contrainte limitante** ; le mur β 3D uniforme est mesuré
+indirectement (via la pente de masse) comme non-limitant jusqu'à 1e10.
 
 ## 7. Verdict V3
 
