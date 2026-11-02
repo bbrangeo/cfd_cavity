@@ -974,8 +974,19 @@ fn run_uniform3d(args: Args) {
     let nuc_mean = nuc_sum / nuc_n as f64;
     let nuf_mean = nuf_sum / nuc_n as f64;
 
-    // --- Verdict porte V1 (ancre littéraire Trias 3D : Nuc = 49.24 ± 5 %) ---
-    let nuc_ref = 49.24;
+    // --- Verdict porte V1 (ancre littéraire Trias 3D) ---
+    // Ancre selon le Ra de la run (Trias et al., JFM 586 (2007), Table 2
+    // p. 271, Case A/B/C 3D : 49.24 / 66.63 / 101.70) ; à Ra=1e9, aucun
+    // DNS 3D Trias n'existe (base 2010 2D uniquement) — ancre interpolée
+    // log-log depuis 6.4e8 et 2e9, exposant local n ≈ 0.265
+    // (Nuc(1e9) ≈ 55.4 ± 0.5, VALIDATION_3D_ETAPE_V3.md §1).
+    let nuc_ref = match args.ra {
+        r if (r - 6.4e8).abs() < 1e3 => 49.24,
+        r if (r - 2.0e9).abs() < 1e3 => 66.63,
+        r if (r - 1.0e9).abs() < 1e3 => 55.44, // interpolé log-log, pas un DNS
+        r if (r - 1.0e10).abs() < 1e4 => 101.70,
+        _ => 49.24, // fallback Case A (étiquette Ra affichée dans le bilan)
+    };
     let ecart_pct = ((nuc_mean - nuc_ref) / nuc_ref).abs() * 100.0;
     let portee_v1 = ecart_pct <= 5.0;
 
