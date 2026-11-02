@@ -1,12 +1,13 @@
 # Plan de développement — Solveur 3D D3Q19 GPU + comparaison DNS Trias
 
-> Statut : **V1 PASSÉE (2026-11-01, `VALIDATION_3D_ETAPE_V1.md`)**. Objectif
+> Statut : **V2 PASSED (2026-11-02, `VALIDATION_3D_ETAPE_V2.md`)** — après
+> **V1 PASSÉE (2026-11-01, `VALIDATION_3D_ETAPE_V1.md`)**. Objectif
 > de thèse noté le 2026-10-31 : **vraie LES-LBM 3D avec GPU, comparaison à
 > DNS Trias**. Déclenchement : après la validation du backend GPU D2Q9
 > (Étapes B→E, PLAN_GPU_BACKEND.md) — le kernel 3D se porte sur la même
-> infrastructure wgpu. Prochaines étapes : V2 (grille fine 128×512×256,
-> Nuc ± 2 %, Numax ≈ 171.9, restart 3D à brancher) puis V3 (dynamic SGS 3D,
-> Ra=1e9).
+> infrastructure wgpu. V2 FAITE (128×512×256, Nuc 51.06 = +3.7 %, PASS,
+> 585 MLUPS RTX 6000). Prochaine étape : V3 (LES Ra=1e9, sensibilité Cs,
+> restart 3D à brancher si redémarrage à chaud).
 
 ## 0. Pourquoi le 3D (résumé de la décision)
 
