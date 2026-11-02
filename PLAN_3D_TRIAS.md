@@ -1,6 +1,7 @@
 # Plan de développement — Solveur 3D D3Q19 GPU + comparaison DNS Trias
 
-> Statut : **V2 PASSED (2026-11-02, `VALIDATION_3D_ETAPE_V2.md`)** — après
+> Statut : **V3 PASS (2026-11-02, `VALIDATION_3D_ETAPE_V3.md`)** — après
+> **V2 PASSED (2026-11-02, `VALIDATION_3D_ETAPE_V2.md`)** et
 > **V1 PASSÉE (2026-11-01, `VALIDATION_3D_ETAPE_V1.md`)**. Objectif
 > de thèse noté le 2026-10-31 : **vraie LES-LBM 3D avec GPU, comparaison à
 > DNS Trias**. Déclenchement : après la validation du backend GPU D2Q9
