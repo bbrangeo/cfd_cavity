@@ -38,8 +38,9 @@ Benchmark de la thèse (§2.5, pages 65–71, Tab. 2.6 et 2.7).
 ## 🎯 Résultats clés
 
 Convergence LBM vs DNS de référence Trias, Soria, Oliva & Pérez-Segarra
-(*Turbulent natural convection in an enclosed cavity*, J. Fluid Mech. 586 (2007), 259–293)
-— cibles Tab. 2.7 de la thèse :
+(*Direct numerical simulations of two- and three-dimensional turbulent natural
+convection flows in a differentially heated cavity of aspect ratio 4*,
+J. Fluid Mech. 586 (2007), 259–293) — cibles Tab. 2.7 de la thèse :
 
 | Quantité | Cible (Trias 2D) | Résultat LBM (final) | Verdict |
 |---|---|---|---|
@@ -427,11 +428,19 @@ pour traçabilité, repliées pour alléger la lecture.
 > 156×312, 144×318, 138×326) et 3D (A/B/C). Les valeurs de recalage 2D :
 > Nū = 49.23/66.19/100.60, Numax = 169.96/249.80/441.65, u2max = 2.22–2.23e-1,
 > u3max = 2.23–2.29e-1 ; 3D : Nū = 49.24/66.63/101.70 (≈1 % au-dessus du 2D).
-> <!-- à vérifier (attribution 2D vs 3D) : ces recalages sont extraits du PDF
->      JFM 586 (2007) ; l'ancre 3D « Nuc = 49.24, Case A, z périodique L1=2 »
->      utilisée par VALIDATION_3D_ETAPE_V1.md est attribuée à Trias et al.
->      JFM 686 (2011) — confirmer quel jeu de valeurs (2D/3D, 2007/2011)
->      correspond à quel papier avant publication. -->
+> **Attribution vérifiée (passe librarian 2026-11-02, PDF extrait)** : tout
+> vient du papier **J. Fluid Mech. 586 (2007), 259–293** — Table 1 (paramètres,
+> p. 264) contient les cases 3D A/B/C ET les cases 2D ; Table 2 (statistiques,
+> p. 271) donne AA2D/BB2D/CC2D = 49.23/66.19/100.60 (cases 2D **finement
+> maillées**, grilles 218×438 etc.) et A/B/C = 49.24/66.63/101.70. Les cibles
+> 2D de la thèse (49.23/66.19/100.60) = **AA2D/BB2D/CC2D** (maillage 2D
+> résolu, comparables à notre 256×1024) ; l'ancre 3D (49.24, Case A,
+> z périodique L1=2) = **Case A du même papier** (Table 1 p. 264 : N1=128,
+> N2=156, N3=312, L1=2.0, γ2=γ3=1.5). A2D/B2D/C2D (maillages identiques aux
+> cases 3D, Δt 1.40e-3 pour A2D) ne servent pas de cible. La référence
+> « Trias JFM 686 (2011) » n'existe pas pour ce cas : les papiers Trias AR=4
+> postérieurs sont les **Part I & II, Int. J. Heat Mass Transfer 53(4), 2010,
+> pp. 665–673 / 674–683** (Ra jusqu'à 1e11) — voir référence [Trias 2010].
 > Nu paroi corrigé (fix ×4) : **[VALIDÉ 2026-10-29]** Ra=1e8 → Nuc = 30.45 vs
 > 30.41 Trias 2D (écart 0.1 %) sur 128×511, 2M pas ; Ra=6.4e8 → 50.89 vs 49.23
 > (3.3 %) sur 256×1024 (convergence : 51.02/3.6 % sur 128×512, plateau de
@@ -473,8 +482,10 @@ pour traçabilité, repliées pour alléger la lecture.
 <details>
 <summary><strong>Papier de référence (benchmark principal)</strong></summary>
 
-> Trias, Soria, Oliva & Pérez-Segarra, « Turbulent natural convection in an
-> enclosed cavity », J. Fluid Mech. 586 (2007), 259–293 — PDF officiel :
+> Trias, Soria, Oliva & Pérez-Segarra, « Direct numerical simulations of
+> two- and three-dimensional turbulent natural convection flows in a
+> differentially heated cavity of aspect ratio 4 », J. Fluid Mech. 586 (2007),
+> 259–293, doi:10.1017/S0022112007006908 — PDF officiel :
 > <https://www.cttc.upc.edu/downloads/DHC_AR4_2Dvs3D/JFM-DHC-paper.pdf>
 > (config identique à la thèse Tab. 2.6 : air Pr=0.71, Az=4, parois
 > verticales différentiellement chauffées, horizontales adiabatiques).
@@ -489,17 +500,23 @@ pour traçabilité, repliées pour alléger la lecture.
 
 ## 📚 Références
 
-- **[Trias 2007]** Trias, Soria, Oliva & Pérez-Segarra — *Turbulent natural
-  convection in an enclosed cavity*, JFM 586, 259–293, DNS 2D/3D cavité Az=4
-  Pr=0.71 : benchmark principal (Nū = 30.41/49.23/100.60 aux
-  Ra = 1e8/6.4e8/1e10) — [PDF officiel](https://www.cttc.upc.edu/downloads/DHC_AR4_2Dvs3D/JFM-DHC-paper.pdf).
-  <!-- à vérifier : le papier JFM 586 (2007) contient les deux configurations
-       2D (cases A2D/B2D/C2D) et 3D (cases A/B/C). Les cibles Tab. 2.7 de la
-       thèse (= Nū 2D ci-dessus) sont attribuées au papier 2007 ici, et
-       l'ancre 3D (Nuc = 49.24, Case A, z périodique L1=2) à Trias et al.
-       JFM 686 (2011) — l'attribution exacte « quelle valeur vient de quel
-       papier » est à confirmer par une passe librarian avant publication
-       (les deux jeux Nū 2D/3D sont très proches : 49.23 vs 49.24 à 6.4e8). -->
+- **[Trias 2007]** Trias, F. X., Soria, M., Oliva, A. & Pérez-Segarra, C. D. —
+  *Direct numerical simulations of two- and three-dimensional turbulent natural
+  convection flows in a differentially heated cavity of aspect ratio 4*,
+  J. Fluid Mech. 586, 259–293 (2007), doi:10.1017/S0022112007006908 —
+  benchmark principal (Nū = 30.41/49.23/100.60 aux Ra = 1e8/6.4e8/1e10) —
+  [PDF officiel](https://www.cttc.upc.edu/downloads/DHC_AR4_2Dvs3D/JFM-DHC-paper.pdf).
+  **Attribution vérifiée (passe librarian 2026-11-02)** : les cibles Tab. 2.7
+  de la thèse (= Nū 2D ci-dessus) correspondent aux cases **AA2D/BB2D/CC2D**
+  (maillage 2D finement résolu, Table 2 p. 271) ; l'ancre 3D (Nuc = 49.24,
+  Case A, z périodique L1=2) correspond à la **Case A 3D du même papier**
+  (Table 1 p. 264, N1=128, N2=156, N3=312) — tout vient du JFM 586 (2007),
+  pas d'un « JFM 686 2011 ».
+- **[Trias 2010]** Trias, F. X., Gorobets, A., Soria, M. & Oliva, A. —
+  *Direct numerical simulation of a differentially heated cavity of aspect
+  ratio 4 with Rayleigh numbers up to 10¹¹ — Part I / Part II*,
+  Int. J. Heat Mass Transfer 53(4), 665–673 / 674–683 (2010) — Ra plus
+  élevés sur la même cavité (discussion qualitative, cibles non utilisées).
 - [Ginzburg 2008] Ginzburg, Verhaeghe & d'Humières — TRT, Λ = 3/16 optimal
   pour bounce-back (Comm. Comp. Phys. 3).
 - [Xin 1993] Xin & Le Quéré — SND spectrale Chebyshev 96×768, Ra=1e10.

@@ -3,11 +3,13 @@
 > Date : 2026-11-01. Matériel : Apple M1 Max (Metal 4, backend GPU wgpu 30).
 > Branche `dev-3d` — nouveau module `src/uniform3d/` (pas d'abstraction
 > partagée avec `src/uniform/`, chemin 2D bit-à-bit intact). Ancre
-> littéraire : **Trias et al. (JFM 686, 2011), Case A, Nuc = 49.24 (Ra=6.4e8,
-> AR=4, Pr=0.71, z périodique L1=2)**. <!-- à vérifier : attribution exacte
-> Case A « 2007 (JFM 586) » vs « 2011 (JFM 686) » — le PDF JFM 586 (2007)
-> contient aussi les cases 3D A/B/C (Nū = 49.24 identique) ; confirmer avant
-> publication (passe librarian). -->
+> littéraire : **Trias et al., J. Fluid Mech. 586 (2007), Case A, Nuc = 49.24
+> (Ra=6.4e8, AR=4, Pr=0.71, z périodique L1=2)**. **Attribution vérifiée
+> (passe librarian 2026-11-02, PDF extrait)** : la Case A 3D (Table 1 p. 264 :
+> N1=128, N2=156, N3=312, L1=2.0, γ2=γ3=1.5 ; Nū 49.24 Table 2 p. 271) vient
+> du **JFM 586 (2007)** — la référence « JFM 686 (2011) » antérieurement
+> citée ici est **incorrecte** (aucun papier Trias JFM 686 DHC AR=4 ; les
+> papiers postérieurs sont Part I & II, IJHMT 53(4) 2010).
 
 ## 1. Protocole (config exacte + correction critique du garde-fou)
 

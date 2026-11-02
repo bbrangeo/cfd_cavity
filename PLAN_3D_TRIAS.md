@@ -24,14 +24,15 @@ physique à porter.
   (réutilise l'infrastructure Étape A : pipelines collide/stream/macroscopic,
   ping-pong, offset FluidX3D).
 - Cavité différentiellement chauffée **3D**, Ra cible 1e8 → 1e9.
-  **Cible : réplique Trias Case A (JFM 2011) = cavité AR=4** (largeur 1 ×
-  hauteur 4, **x1 périodique L1=2** — pas cubique : la référence visée est
-  Trias et al., JFM 686, qui traite l'AR=4 jusqu'à Ra=1e11). Cohérent avec
+  **Cible : réplique Trias Case A (JFM 586, 2007) = cavité AR=4** (largeur 1 ×
+  hauteur 4, **x1 périodique L1=2** — pas cubique : le même papier traite
+  AR=4 en 2D/3D ; les Ra jusqu'à 1e11 sont dans Trias et al., Part I & II,
+  IJHMT 53(4) 2010 — attribution vérifiée 2026-11-02). Cohérent avec
   tout le chapitre 2D (256×1024 = AR4), et la dimension périodique est plus
   simple en LBM (wrap, pas de bounce-back : 4 murs seulement, les 9 vitesses
   à wz=0 se traitent exactement comme le D2Q9 actuel).
 - **Comparaison à DNS Trias 3D** (Trias, Soria, Oliva, Pérez-Segarra,
-  JFM 686, table 3 — Pr=0.71, latérales isothermes, horizontales
+  JFM 586 2007, Table 2 p. 271 — Pr=0.71, latérales isothermes, horizontales
   adiabatiques, clustering tanh(γ) non reproductible en LBM uniforme, comme
   en 2D) : **Nuc 3D = 49.24 (Ra=6.4e8) vs Nuc 2D = 49.23** ; 101.70 vs
   100.60 (1e10). **⚠️ Correction factuelle (cadrage Oracle 2026-11-01)** :
@@ -103,7 +104,8 @@ f_out ping-pong + f_col, idem g) = **2×19×3×4 = 456 octets/nœud** (pas 152).
 2. **Coût mémoire à 1e10 AR4** : ~61 Go — hors budget ; V3 plafonné à
    Ra=1e9 (128×512×256) ou cubic 256³.
 3. **Références 3D Trias** : config exacte confirmée (cadrage Oracle
-   2026-11-01, JFM 2011 table 1/3) : **AR=4, x1 périodique L1=2**, Pr=0.71,
+   2026-11-01, JFM 586 2007 Table 1 p. 264 / Table 2 p. 271) : **AR=4, x1
+   périodique L1=2**, Pr=0.71,
    latérales isothermes, horizontales adiabatiques, clustering tanh(γ) —
    non reproductible en LBM uniforme (comme en 2D, où le bounce-back
    halfway d'ordre 2 a tout de même donné +0.30 % à 1e10 : argument
@@ -121,6 +123,7 @@ f_out ping-pong + f_col, idem g) = **2×19×3×4 = 456 octets/nœud** (pas 152).
 ~~Le scope exact (chapitre thèse complet vs perspective) sera décidé après la
 validation 2D complète (G5) et une lecture des références Trias 3D.~~
 **Levée 2026-11-01** : G5 close (toutes portes G1-G5 passées), Trias 3D lu
-(JFM 2011) — chapitre thèse complet visé, Étape V1 lancée sur branche
+(JFM 586 2007 ; attribution corrigée 2026-11-02 — pas de JFM 686 2011) —
+chapitre thèse complet visé, Étape V1 lancée sur branche
 `dev-3d` (cadrage Oracle : architecture `src/uniform3d/` copie-adapt,
 D3Q19 SoA flat, 5 tests device, Nuc 49.24 ± 5 % à Ra=6.4e8).

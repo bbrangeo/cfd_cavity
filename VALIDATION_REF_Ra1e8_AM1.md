@@ -172,7 +172,9 @@ Toute mention de « 0.1–0.6 % vs Trias » issue de cette run doit être requal
 ```
 Config lancée : <commande exacte>
 PID : <pid>
-Ra/Pr effectifs : 1e8 / 0.71 (am=1, à vérifier dans le log l.21-22)
+Ra/Pr effectifs : 1e8 / 0.71 (am=1, VÉRIFIÉ log tantanka l.2-4 :
+Grille 64×256, Ra = 1.000e8 cible, Pr = 0.71, nu = 0.001200,
+alpha = 0.001690, beta_eff = 1.2232e-5, tau_t = 0.5051)
 Nuc final : — | Nuf : — | w_max(z=0.5) : — | masse : —
 Écart vs Trias(1e8)=30.41 : —
 Écart vs ancienne run (30.5745) : —
