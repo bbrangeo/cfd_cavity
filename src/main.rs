@@ -919,14 +919,19 @@ fn run_uniform3d(args: Args) {
                 .nu_t
                 .iter()
                 .fold(0.0f64, |m, &v| m.max(v.abs()));
+            let max_rho_dev = sim
+                .rho
+                .iter()
+                .fold(0.0f64, |m, &v| m.max((v - 1.0).abs()));
             let msg = format!(
-                "step {:>7} | w_max = {:.5} | max_u = {:.5} | Nuc = {:.4} | Nuf = {:.4} | masse = {:.6} | nu_t_max = {:.3e}",
+                "step {:>7} | w_max = {:.5} | max_u = {:.5} | Nuc = {:.4} | Nuf = {:.4} | masse = {:.6} | rho_dev = {:.3e} | nu_t_max = {:.3e}",
                 step,
                 wmax,
                 max_u,
                 sim.nusselt_hot(),
                 sim.nusselt_cold(),
                 sim.total_mass() / n_nodes as f64,
+                max_rho_dev,
                 nu_t_max
             );
             println!("{msg}");
