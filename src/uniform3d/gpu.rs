@@ -32,12 +32,18 @@
 //! dynamique de tableaux privés ; l'indexation dynamique des STORAGE buffers
 //! dans `stream_dir`/`wall_grad_dir` est autorisée et coalescée).
 //!
-//! Précision (parade FluidX3D) : les populations f sont stockées DÉCALÉES —
-//! f_i − w_i·ρ₀ (ρ₀ = 1) — le macroscopique accumule les DÉCALAGES (Σw_i = 1
-//! et Σw_i·c_i = 0 ajoutés analytiquement), ce qui supprime l'annulation
-//! catastrophique de la somme Σ(w_i + décalage)·c_i sur les moments (nécessaire
-//! au test analytique de Guo à 1e-6 près). g est stocké tel quel (T̄ = 0 ⇒
-//! décalage g_i − w_i·T̄ = g_i).
+//! Précision (parade FluidX3D, P1a — port du kernel 2D validé) : les
+//! populations f sont stockées ET COLLIDÉES en DÉCALÉ — f̃_i = f_i − w_i·ρ₀
+//! (ρ₀ = 1) — la collision et le macroscopique ne travaillent QUE sur les
+//! petits nombres : ρ−1 = Σ f̃_i (densité comme écart à 1), feq_i − w_i =
+//! w_i·[(ρ−1) + ρ·A] (A = eu/cs² + eu²/(2cs⁴) − u²/(2cs²)), d_i = f̃_i −
+//! (feq_i − w_i), f̃_i' = f̃_i − a·d_i − b·d_opp + S_i (l'offset w_i se
+//! simplifie EXACTEMENT — plus aucun W + f̃ ni w·ρ·(1+A) ~0.44 dans le calcul).
+//! Le macroscopique accumule les DÉCALAGES : mx/my/mz = Σ c_i·f̃_i EXACT
+//! (Σw_i·c_i = 0 par symétrie D3Q19 — poids opposés égaux, table vérifiée du
+//! crate). fy garde le ρ pleine magnitude (flottabilité inchangée — le
+//! passage à ρ₀ dans la force est P1b, autre lane). g est stocké tel quel
+//! (T̄ = 0 ⇒ décalage g_i − w_i^t·T̄ = g_i).
 //!
 //! Hors spin-up (params constants bit-à-bit), les pas s'enchaînent dans un
 //! SEUL command encoder (batch de BATCH_STEPS pas, flushé avant tout
@@ -207,11 +213,17 @@ fn n_tot() -> u32 {
     return P.nx * P.ny * P.nz;
 }
 
-// Équilibre hydrodynamique feq (crate : w·ρ·[1 + eu/cs² + eu²/(2cs⁴) − u²/(2cs²)]).
-fn feq_c(w: f32, cx: f32, cy: f32, cz: f32, rho: f32, ux: f32, uy: f32, uz: f32) -> f32 {
+// Équilibre hydrodynamique en VARIABLE DÉCALÉE (P1a, port du 2D) : feq_i − w_i =
+// w_i·[(ρ−1) + ρ·A], A = eu/cs² + eu²/(2cs⁴) − u²/(2cs²). Identité exacte
+// (feq_i = w_i·ρ·[1+A] = w_i + w_i·(ρ−1) + w_i·ρ·A, Σw_i = 1) évaluée
+// UNIQUEMENT sur les petits nombres : ρ−1 = Σ f̃_i ~ 1e-6 et ρ·A ~ 1e-4,
+// jamais le ~0.44 de w_i·ρ. rho_m1 = Σ f̃_i (somme des décalages, sans le 1),
+// rho = 1 + ρ−1 (pleine magnitude, uniquement en facteur de ρ·A).
+fn feq_off_c(w: f32, cx: f32, cy: f32, cz: f32, rho_m1: f32, rho: f32, ux: f32, uy: f32, uz: f32) -> f32 {
     let eu = cx * ux + cy * uy + cz * uz;
     let u2 = ux * ux + uy * uy + uz * uz;
-    return w * rho * (1.0 + eu / CS2 + eu * eu / (2.0 * CS2 * CS2) - u2 / (2.0 * CS2));
+    let a_term = eu / CS2 + eu * eu / (2.0 * CS2 * CS2) - u2 / (2.0 * CS2);
+    return w * (rho_m1 + rho * a_term);
 }
 
 // Équilibre thermique geq (crate : w·T·[1 + eu/cs²]).
@@ -222,8 +234,15 @@ fn geq_c(w: f32, cx: f32, cy: f32, cz: f32, t: f32, ux: f32, uy: f32, uz: f32) -
 
 // Collision TRT d'une direction avec force de Guo (Guo, Shi & Zheng 2002),
 // F = (0, fy, 0) : partie impaire (momentum, facteur 1 − 1/(2τ−)) et partie
-// paire (stress, facteur 1 − 1/(2τ+)). Sur D3Q19, Σe·s_plus = 0 (moment 3ᵉ
-// ordre nul) et Σc·s_minus = fy exact ; à u = 0, s_plus = 0 identiquement.
+// paire (stress, facteur 1 − 1/(2τ+)). P1a (variables décalées, port du 2D) :
+// fin et la valeur de retour sont DÉCALÉS (f̃ = f − w_i, f̃' = f' − w_i) —
+// l'offset w_i se simplifie EXACTEMENT dans la formule CPU : f' = (w + f̃) −
+// a·d − b·d_opp + S = w + [f̃ − a·d − b·d_opp + S] puisque d_i = f̃_i −
+// (feq_i − w_i) contient déjà le même w_i de part et d'autre. AUCUN (w + fin)
+// réinjecté : le gros nombre (~0.44) ne traverse plus la collision. Sur D3Q19,
+// Σe·s_plus = 0 (moment 3ᵉ ordre nul) et Σc·s_minus = fy exact ; à u = 0,
+// s_plus = 0 identiquement. (le paramètre w reste pour les termes
+// S_i = w_i·[…]·fy, qui ne dépendent pas de f.)
 fn trt_f(w: f32, cx: f32, cy: f32, cz: f32, fin: f32, d: f32, d_opp: f32,
          ux: f32, uy: f32, uz: f32, fy_node: f32, a_f: f32, b_f: f32,
          tau_minus: f32, tau_plus: f32) -> f32 {
@@ -231,7 +250,7 @@ fn trt_f(w: f32, cx: f32, cy: f32, cz: f32, fin: f32, d: f32, d_opp: f32,
     let s_i = w * ((cy - uy) / CS2 + ei_u * cy / (CS2 * CS2)) * fy_node;
     let s_minus = w * (cy / CS2) * fy_node;
     let s_plus = s_i - s_minus;
-    return (w + fin) - a_f * d - b_f * d_opp
+    return fin - a_f * d - b_f * d_opp
         + (1.0 - 0.5 / tau_minus) * s_minus
         + (1.0 - 0.5 / tau_plus) * s_plus;
 }
@@ -318,39 +337,55 @@ fn collide(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // Champs macroscopiques du temps t (stock, écrits par le dispatch 2 du
     // pas précédent — y compris la correction de vitesse Guo et le no-slip).
-    let rho = stock[5u * k + 0u];
     let ux = stock[5u * k + 1u];
     let uy = stock[5u * k + 2u];
     let uz = stock[5u * k + 3u];
     let temp = stock[5u * k + 4u];
 
+    // P1a (variables décalées) : ρ−1 = Σ f̃_i, calculé comme la SOMME DES
+    // DÉCALAGES (jamais les populations recollées W + f̃) — la physique est
+    // dans l'écart f_i − w_i (1e-6..1e-3), la somme des 0.44 annulerait le
+    // signal dans f32 (biais d'arrondi systématique, dérive de masse G5 §4 :
+    // +1.446e-8/pas en 2D).
+    let f0s = f_in[0u * n + k];
+    let rho_m1 = f0s + f_in[1u * n + k] + f_in[2u * n + k] + f_in[3u * n + k]
+        + f_in[4u * n + k] + f_in[5u * n + k] + f_in[6u * n + k] + f_in[7u * n + k]
+        + f_in[8u * n + k] + f_in[9u * n + k] + f_in[10u * n + k] + f_in[11u * n + k]
+        + f_in[12u * n + k] + f_in[13u * n + k] + f_in[14u * n + k] + f_in[15u * n + k]
+        + f_in[16u * n + k] + f_in[17u * n + k] + f_in[18u * n + k];
+    let rho = 1.0 + rho_m1;
+
     // Force de Boussinesq : fy = ρ·β_eff·(T − t_ref), évaluée aux champs du
     // temps t — utilisée par la collision de CE pas. Le dispatch 2 (correction
     // de vitesse Guo éq. (16)) la recalcule localement depuis stock (même
-    // expression, même F — sémantique CPU).
+    // expression, même F — sémantique CPU). P1a : fy utilise le ρ reconstruit
+    // des décalages (1 + Σ f̃_i), cohérent avec feq ; ρ pleine magnitude ICI
+    // uniquement (flottabilité inchangée — le passage à ρ₀ dans fy est P1b,
+    // séparé pour que l'A/B contre le CPU permette de savoir ce qui a bougé).
     let fy_node = rho * P.beta_eff * (temp - P.t_ref);
 
-    // Populations d'entrée (reconstruction depuis le stockage décalé :
-    // f_i = w_i + décalage) — stride SoA : direction i à f_in[i·n + k].
-    let f0 = W0 + f_in[0u * n + k];
-    let f1 = W1 + f_in[1u * n + k];
-    let f2 = W1 + f_in[2u * n + k];
-    let f3 = W1 + f_in[3u * n + k];
-    let f4 = W1 + f_in[4u * n + k];
-    let f5 = W1 + f_in[5u * n + k];
-    let f6 = W1 + f_in[6u * n + k];
-    let f7 = W5 + f_in[7u * n + k];
-    let f8 = W5 + f_in[8u * n + k];
-    let f9 = W5 + f_in[9u * n + k];
-    let f10 = W5 + f_in[10u * n + k];
-    let f11 = W5 + f_in[11u * n + k];
-    let f12 = W5 + f_in[12u * n + k];
-    let f13 = W5 + f_in[13u * n + k];
-    let f14 = W5 + f_in[14u * n + k];
-    let f15 = W5 + f_in[15u * n + k];
-    let f16 = W5 + f_in[16u * n + k];
-    let f17 = W5 + f_in[17u * n + k];
-    let f18 = W5 + f_in[18u * n + k];
+    // Populations d'entrée en DÉCALÉ (f̃_i = f_i − w_i, la physique) —
+    // stride SoA : direction i à f_in[i·n + k]. AUCUN recollage W + f̃ :
+    // le gros nombre (≈0.44) serait recollé puis re-soustrait à chaque
+    // opération, annulant le gain de précision de l'offset.
+    let f1s = f_in[1u * n + k];
+    let f2s = f_in[2u * n + k];
+    let f3s = f_in[3u * n + k];
+    let f4s = f_in[4u * n + k];
+    let f5s = f_in[5u * n + k];
+    let f6s = f_in[6u * n + k];
+    let f7s = f_in[7u * n + k];
+    let f8s = f_in[8u * n + k];
+    let f9s = f_in[9u * n + k];
+    let f10s = f_in[10u * n + k];
+    let f11s = f_in[11u * n + k];
+    let f12s = f_in[12u * n + k];
+    let f13s = f_in[13u * n + k];
+    let f14s = f_in[14u * n + k];
+    let f15s = f_in[15u * n + k];
+    let f16s = f_in[16u * n + k];
+    let f17s = f_in[17u * n + k];
+    let f18s = f_in[18u * n + k];
     let g0 = g_in[0u * n + k];
     let g1 = g_in[1u * n + k];
     let g2 = g_in[2u * n + k];
@@ -371,26 +406,28 @@ fn collide(@builtin(global_invocation_id) gid: vec3<u32>) {
     let g17 = g_in[17u * n + k];
     let g18 = g_in[18u * n + k];
 
-    // Équilibres (direction par direction — mêmes expressions que la boucle).
-    let f_eq0 = feq_c(W0, 0.0, 0.0, 0.0, rho, ux, uy, uz);
-    let f_eq1 = feq_c(W1, 1.0, 0.0, 0.0, rho, ux, uy, uz);
-    let f_eq2 = feq_c(W1, -1.0, 0.0, 0.0, rho, ux, uy, uz);
-    let f_eq3 = feq_c(W1, 0.0, 1.0, 0.0, rho, ux, uy, uz);
-    let f_eq4 = feq_c(W1, 0.0, -1.0, 0.0, rho, ux, uy, uz);
-    let f_eq5 = feq_c(W1, 0.0, 0.0, 1.0, rho, ux, uy, uz);
-    let f_eq6 = feq_c(W1, 0.0, 0.0, -1.0, rho, ux, uy, uz);
-    let f_eq7 = feq_c(W5, 1.0, 1.0, 0.0, rho, ux, uy, uz);
-    let f_eq8 = feq_c(W5, -1.0, 1.0, 0.0, rho, ux, uy, uz);
-    let f_eq9 = feq_c(W5, 1.0, -1.0, 0.0, rho, ux, uy, uz);
-    let f_eq10 = feq_c(W5, -1.0, -1.0, 0.0, rho, ux, uy, uz);
-    let f_eq11 = feq_c(W5, 1.0, 0.0, 1.0, rho, ux, uy, uz);
-    let f_eq12 = feq_c(W5, -1.0, 0.0, 1.0, rho, ux, uy, uz);
-    let f_eq13 = feq_c(W5, 1.0, 0.0, -1.0, rho, ux, uy, uz);
-    let f_eq14 = feq_c(W5, -1.0, 0.0, -1.0, rho, ux, uy, uz);
-    let f_eq15 = feq_c(W5, 0.0, 1.0, 1.0, rho, ux, uy, uz);
-    let f_eq16 = feq_c(W5, 0.0, -1.0, 1.0, rho, ux, uy, uz);
-    let f_eq17 = feq_c(W5, 0.0, 1.0, -1.0, rho, ux, uy, uz);
-    let f_eq18 = feq_c(W5, 0.0, -1.0, -1.0, rho, ux, uy, uz);
+    // Équilibres en DÉCALÉ (P1a : feq_i − w_i, mêmes expressions que la
+    // boucle au terme w_i·ρ·A près — identité exacte). rho_m1 = Σ f̃, rho
+    // pleine magnitude en facteur de ρ·A uniquement.
+    let f_eq0 = feq_off_c(W0, 0.0, 0.0, 0.0, rho_m1, rho, ux, uy, uz);
+    let f_eq1 = feq_off_c(W1, 1.0, 0.0, 0.0, rho_m1, rho, ux, uy, uz);
+    let f_eq2 = feq_off_c(W1, -1.0, 0.0, 0.0, rho_m1, rho, ux, uy, uz);
+    let f_eq3 = feq_off_c(W1, 0.0, 1.0, 0.0, rho_m1, rho, ux, uy, uz);
+    let f_eq4 = feq_off_c(W1, 0.0, -1.0, 0.0, rho_m1, rho, ux, uy, uz);
+    let f_eq5 = feq_off_c(W1, 0.0, 0.0, 1.0, rho_m1, rho, ux, uy, uz);
+    let f_eq6 = feq_off_c(W1, 0.0, 0.0, -1.0, rho_m1, rho, ux, uy, uz);
+    let f_eq7 = feq_off_c(W5, 1.0, 1.0, 0.0, rho_m1, rho, ux, uy, uz);
+    let f_eq8 = feq_off_c(W5, -1.0, 1.0, 0.0, rho_m1, rho, ux, uy, uz);
+    let f_eq9 = feq_off_c(W5, 1.0, -1.0, 0.0, rho_m1, rho, ux, uy, uz);
+    let f_eq10 = feq_off_c(W5, -1.0, -1.0, 0.0, rho_m1, rho, ux, uy, uz);
+    let f_eq11 = feq_off_c(W5, 1.0, 0.0, 1.0, rho_m1, rho, ux, uy, uz);
+    let f_eq12 = feq_off_c(W5, -1.0, 0.0, 1.0, rho_m1, rho, ux, uy, uz);
+    let f_eq13 = feq_off_c(W5, 1.0, 0.0, -1.0, rho_m1, rho, ux, uy, uz);
+    let f_eq14 = feq_off_c(W5, -1.0, 0.0, -1.0, rho_m1, rho, ux, uy, uz);
+    let f_eq15 = feq_off_c(W5, 0.0, 1.0, 1.0, rho_m1, rho, ux, uy, uz);
+    let f_eq16 = feq_off_c(W5, 0.0, -1.0, 1.0, rho_m1, rho, ux, uy, uz);
+    let f_eq17 = feq_off_c(W5, 0.0, 1.0, -1.0, rho_m1, rho, ux, uy, uz);
+    let f_eq18 = feq_off_c(W5, 0.0, -1.0, -1.0, rho_m1, rho, ux, uy, uz);
     let g_eq0 = geq_c(W0, 0.0, 0.0, 0.0, temp, ux, uy, uz);
     let g_eq1 = geq_c(W1, 1.0, 0.0, 0.0, temp, ux, uy, uz);
     let g_eq2 = geq_c(W1, -1.0, 0.0, 0.0, temp, ux, uy, uz);
@@ -411,29 +448,31 @@ fn collide(@builtin(global_invocation_id) gid: vec3<u32>) {
     let g_eq17 = geq_c(W5, 0.0, 1.0, -1.0, temp, ux, uy, uz);
     let g_eq18 = geq_c(W5, 0.0, -1.0, -1.0, temp, ux, uy, uz);
 
-    // Moments non-équilibrés π_neq (avant relaxation) pour |S| — 3D :
+    // Moments non-équilibrés π_neq (avant relaxation) pour |S| — P1a :
+    // d_i = f̃_i − (feq_i − w_i), calculés UNIQUEMENT sur les petits nombres
+    // (hors équilibre, mêmes contributions et ordre que la boucle). 3D :
     // pi_xx = d1+d2+d7..d14 ; pi_yy = d3+d4+d7..d10+d15..d18 ;
     // pi_zz = d5+d6+d11..d18 ; pi_xy = d7−d8−d9+d10 ; pi_xz = d11−d12−d13+d14 ;
     // pi_yz = d15−d16−d17+d18.
-    let d0 = f0 - f_eq0;
-    let d1 = f1 - f_eq1;
-    let d2 = f2 - f_eq2;
-    let d3 = f3 - f_eq3;
-    let d4 = f4 - f_eq4;
-    let d5 = f5 - f_eq5;
-    let d6 = f6 - f_eq6;
-    let d7 = f7 - f_eq7;
-    let d8 = f8 - f_eq8;
-    let d9 = f9 - f_eq9;
-    let d10 = f10 - f_eq10;
-    let d11 = f11 - f_eq11;
-    let d12 = f12 - f_eq12;
-    let d13 = f13 - f_eq13;
-    let d14 = f14 - f_eq14;
-    let d15 = f15 - f_eq15;
-    let d16 = f16 - f_eq16;
-    let d17 = f17 - f_eq17;
-    let d18 = f18 - f_eq18;
+    let d0 = f0s - f_eq0;
+    let d1 = f1s - f_eq1;
+    let d2 = f2s - f_eq2;
+    let d3 = f3s - f_eq3;
+    let d4 = f4s - f_eq4;
+    let d5 = f5s - f_eq5;
+    let d6 = f6s - f_eq6;
+    let d7 = f7s - f_eq7;
+    let d8 = f8s - f_eq8;
+    let d9 = f9s - f_eq9;
+    let d10 = f10s - f_eq10;
+    let d11 = f11s - f_eq11;
+    let d12 = f12s - f_eq12;
+    let d13 = f13s - f_eq13;
+    let d14 = f14s - f_eq14;
+    let d15 = f15s - f_eq15;
+    let d16 = f16s - f_eq16;
+    let d17 = f17s - f_eq17;
+    let d18 = f18s - f_eq18;
     let pi_xx = d1 + d2 + d7 + d8 + d9 + d10 + d11 + d12 + d13 + d14;
     let pi_yy = d3 + d4 + d7 + d8 + d9 + d10 + d15 + d16 + d17 + d18;
     let pi_zz = d5 + d6 + d11 + d12 + d13 + d14 + d15 + d16 + d17 + d18;
@@ -463,46 +502,50 @@ fn collide(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // Collision TRT avec force (Guo) — paires opposées explicites :
     // (0), (1,2), (3,4), (5,6), (7,10), (8,9), (11,14), (12,13), (15,18),
-    // (16,17). Deviations d_i/d_opp identiques à la boucle (Σ f' = Σ f :
-    // masse conservée).
+    // (16,17). P1a : trt_f travaille en DÉCALÉ (fin = f̃, retourne f̃') —
+    // l'offset w_i se simplifie EXACTEMENT dans l'identité f' = w + f̃' : la
+    // partie (w + fin) − ... − w s'annule, plus aucun gros nombre (~0.44)
+    // dans la collision. Σ f̃' = Σ f̃ : masse conservée, sémantique TRT
+    // identique. Deviations d_i/d_opp en petits nombres (identiques à la
+    // boucle au terme w_i près, qui se simplifie exactement).
     f_col[0u * n + k] = trt_f(W0, 0.0, 0.0, 0.0, f_in[0u * n + k], d0, d0, ux, uy, uz,
-                              fy_node, a_f, b_f, tau_minus, tau_plus) - W0;
+                              fy_node, a_f, b_f, tau_minus, tau_plus);
     f_col[1u * n + k] = trt_f(W1, 1.0, 0.0, 0.0, f_in[1u * n + k], d1, d2, ux, uy, uz,
-                              fy_node, a_f, b_f, tau_minus, tau_plus) - W1;
+                              fy_node, a_f, b_f, tau_minus, tau_plus);
     f_col[2u * n + k] = trt_f(W1, -1.0, 0.0, 0.0, f_in[2u * n + k], d2, d1, ux, uy, uz,
-                              fy_node, a_f, b_f, tau_minus, tau_plus) - W1;
+                              fy_node, a_f, b_f, tau_minus, tau_plus);
     f_col[3u * n + k] = trt_f(W1, 0.0, 1.0, 0.0, f_in[3u * n + k], d3, d4, ux, uy, uz,
-                              fy_node, a_f, b_f, tau_minus, tau_plus) - W1;
+                              fy_node, a_f, b_f, tau_minus, tau_plus);
     f_col[4u * n + k] = trt_f(W1, 0.0, -1.0, 0.0, f_in[4u * n + k], d4, d3, ux, uy, uz,
-                              fy_node, a_f, b_f, tau_minus, tau_plus) - W1;
+                              fy_node, a_f, b_f, tau_minus, tau_plus);
     f_col[5u * n + k] = trt_f(W1, 0.0, 0.0, 1.0, f_in[5u * n + k], d5, d6, ux, uy, uz,
-                              fy_node, a_f, b_f, tau_minus, tau_plus) - W1;
+                              fy_node, a_f, b_f, tau_minus, tau_plus);
     f_col[6u * n + k] = trt_f(W1, 0.0, 0.0, -1.0, f_in[6u * n + k], d6, d5, ux, uy, uz,
-                              fy_node, a_f, b_f, tau_minus, tau_plus) - W1;
+                              fy_node, a_f, b_f, tau_minus, tau_plus);
     f_col[7u * n + k] = trt_f(W5, 1.0, 1.0, 0.0, f_in[7u * n + k], d7, d10, ux, uy, uz,
-                              fy_node, a_f, b_f, tau_minus, tau_plus) - W5;
+                              fy_node, a_f, b_f, tau_minus, tau_plus);
     f_col[10u * n + k] = trt_f(W5, -1.0, -1.0, 0.0, f_in[10u * n + k], d10, d7, ux, uy, uz,
-                               fy_node, a_f, b_f, tau_minus, tau_plus) - W5;
+                               fy_node, a_f, b_f, tau_minus, tau_plus);
     f_col[8u * n + k] = trt_f(W5, -1.0, 1.0, 0.0, f_in[8u * n + k], d8, d9, ux, uy, uz,
-                              fy_node, a_f, b_f, tau_minus, tau_plus) - W5;
+                              fy_node, a_f, b_f, tau_minus, tau_plus);
     f_col[9u * n + k] = trt_f(W5, 1.0, -1.0, 0.0, f_in[9u * n + k], d9, d8, ux, uy, uz,
-                              fy_node, a_f, b_f, tau_minus, tau_plus) - W5;
+                              fy_node, a_f, b_f, tau_minus, tau_plus);
     f_col[11u * n + k] = trt_f(W5, 1.0, 0.0, 1.0, f_in[11u * n + k], d11, d14, ux, uy, uz,
-                               fy_node, a_f, b_f, tau_minus, tau_plus) - W5;
+                               fy_node, a_f, b_f, tau_minus, tau_plus);
     f_col[14u * n + k] = trt_f(W5, -1.0, 0.0, -1.0, f_in[14u * n + k], d14, d11, ux, uy, uz,
-                               fy_node, a_f, b_f, tau_minus, tau_plus) - W5;
+                               fy_node, a_f, b_f, tau_minus, tau_plus);
     f_col[12u * n + k] = trt_f(W5, -1.0, 0.0, 1.0, f_in[12u * n + k], d12, d13, ux, uy, uz,
-                               fy_node, a_f, b_f, tau_minus, tau_plus) - W5;
+                               fy_node, a_f, b_f, tau_minus, tau_plus);
     f_col[13u * n + k] = trt_f(W5, 1.0, 0.0, -1.0, f_in[13u * n + k], d13, d12, ux, uy, uz,
-                               fy_node, a_f, b_f, tau_minus, tau_plus) - W5;
+                               fy_node, a_f, b_f, tau_minus, tau_plus);
     f_col[15u * n + k] = trt_f(W5, 0.0, 1.0, 1.0, f_in[15u * n + k], d15, d18, ux, uy, uz,
-                               fy_node, a_f, b_f, tau_minus, tau_plus) - W5;
+                               fy_node, a_f, b_f, tau_minus, tau_plus);
     f_col[18u * n + k] = trt_f(W5, 0.0, -1.0, -1.0, f_in[18u * n + k], d18, d15, ux, uy, uz,
-                               fy_node, a_f, b_f, tau_minus, tau_plus) - W5;
+                               fy_node, a_f, b_f, tau_minus, tau_plus);
     f_col[16u * n + k] = trt_f(W5, 0.0, -1.0, 1.0, f_in[16u * n + k], d16, d17, ux, uy, uz,
-                               fy_node, a_f, b_f, tau_minus, tau_plus) - W5;
+                               fy_node, a_f, b_f, tau_minus, tau_plus);
     f_col[17u * n + k] = trt_f(W5, 0.0, 1.0, -1.0, f_in[17u * n + k], d17, d16, ux, uy, uz,
-                               fy_node, a_f, b_f, tau_minus, tau_plus) - W5;
+                               fy_node, a_f, b_f, tau_minus, tau_plus);
 
     // Collision scalaire BGK (τ_t− = τ_t+ ⇒ b_g = 0).
     g_col[0u * n + k] = g0 - a_g * (g0 - g_eq0);
@@ -612,9 +655,12 @@ fn stream_macro(@builtin(global_invocation_id) gid: vec3<u32>) {
     // --- Axe z : PÉRIODIQUE (wrap dans stream_dir), rien à faire.
 
     // --- Macroscopique (ρ, u, T) depuis f_out / g_out (post-stream + CL).
-    // Les moments sont accumulés sur les DÉCALAGES (Σw_i = 1 et Σw_i·c_i = 0
-    // ajoutés analytiquement) — supprime l'annulation catastrophique de la
-    // somme pondérée (parade FluidX3D, nécessaire au test de Guo à 1e-6).
+    // P1a (variables décalées) : ρ−1 = Σ f̃_i (somme des décalages, SANS
+    // recoller les W + f̃ — la somme des 0.44 annulerait le signal f32) ;
+    // mx/my/mz = Σ c_i·f_i = Σ c_i·f̃_i EXACTEMENT (Σ c_i·w_i = 0, symétrie
+    // D3Q19 — poids opposés égaux, table D3Q19 du crate vérifiée), donc
+    // moments en décalé identiques au CPU, sans aucun gros nombre. Déroulé,
+    // même ordre d'accumulation que la boucle (j = 0..19).
     let s0 = f_out[0u * n + k];
     let s1 = f_out[1u * n + k];
     let s2 = f_out[2u * n + k];
