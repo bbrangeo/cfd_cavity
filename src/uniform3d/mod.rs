@@ -13,4 +13,8 @@
 
 pub mod gpu;
 pub mod rng;
+pub mod snapshot;
 pub mod solver;
+
+#[cfg(test)]
+mod tests;

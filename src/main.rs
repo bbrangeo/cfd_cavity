@@ -18,6 +18,7 @@ use uniform::post::{self, TimeAverager};
 use uniform::snapshot;
 use uniform::solver::{self, CavitySolver};
 use uniform3d::gpu::GpuSolver3D;
+use uniform3d::snapshot as snapshot3d;
 use uniform3d::solver::CavitySolver3D;
 
 fn main() {
@@ -865,6 +866,65 @@ fn run_uniform3d(args: Args) {
         args.nu_start_mult,
     );
 
+    // --- Option --restart : initialisation depuis un snapshot binaire 3D ---
+    // (module uniform3d::snapshot, format b"SNP3" — INDÉPENDANT du 2D). Les
+    // champs macroscopiques sont injectés dans `sim` AVANT
+    // GpuSolver3D::from_solver : from_solver consomme les champs
+    // macroscopiques du solveur (rho, ux, uy, uz, temperature) et reconstruit
+    // les populations décalées f̃ = f − w_i·ρ₀ / ρ−1 = Σf̃ + le stock
+    // [ρ, ux, uy, uz, T] depuis ces champs (gpu.rs l.788-835) — aucune
+    // population CPU à injecter.
+    if let Some(ref snap_path) = args.restart {
+        let (snx, sny, snz, sstep, su_scale, rho_s, ux_s, uy_s, uz_s, t_s) =
+            snapshot3d::read_snapshot_3d(Path::new(snap_path)).unwrap_or_else(|e| {
+                eprintln!("Erreur de lecture du snapshot 3D {snap_path} : {e}");
+                std::process::exit(6);
+            });
+        let same_grid = (snx, sny, snz) == (args.nx, args.ny, args.nz);
+        println!(
+            "Restart depuis {snap_path} : snapshot {snx}×{sny}×{snz} (step {sstep}) → grille {}×{}×{}{}",
+            args.nx,
+            args.ny,
+            args.nz,
+            if same_grid { "" } else { " (interpolation trilinéaire)" }
+        );
+
+        // --- Re-échelonnage β au restart (unités de réseau) ---
+        // u_scale = utarget·(ny−1) : quand le run destination change d'unités
+        // (ex. Ra=1e9 utarget 0.01 → Ra=1e10 utarget 0.02, lz identique), le
+        // champ u doit être multiplié par u_scale_new / u_scale_snap. T est
+        // adimensionnelle et ρ ≈ 1 : inchangés.
+        let u_scale_new = args.utarget * (args.ny - 1) as f64;
+        let rescale = if su_scale > 0.0 && su_scale.is_finite() {
+            u_scale_new / su_scale
+        } else {
+            1.0
+        };
+        println!(
+            "Re-échelonnage vitesse ×{rescale:.6} (u_scale {:.6} → {:.6}, utarget {:.4} du snapshot → {:.4})",
+            su_scale, u_scale_new,
+            if (args.ny - 1) as f64 > 0.0 { su_scale / (args.ny - 1) as f64 } else { su_scale },
+            args.utarget
+        );
+
+        let rho_i = snapshot3d::interpolate_field_3d(&rho_s, snx, sny, snz, args.nx, args.ny, args.nz);
+        let mut ux_i =
+            snapshot3d::interpolate_field_3d(&ux_s, snx, sny, snz, args.nx, args.ny, args.nz);
+        let mut uy_i =
+            snapshot3d::interpolate_field_3d(&uy_s, snx, sny, snz, args.nx, args.ny, args.nz);
+        let mut uz_i =
+            snapshot3d::interpolate_field_3d(&uz_s, snx, sny, snz, args.nx, args.ny, args.nz);
+        let t_i = snapshot3d::interpolate_field_3d(&t_s, snx, sny, snz, args.nx, args.ny, args.nz);
+        snapshot3d::rescale_velocity_fields(&mut ux_i, &mut uy_i, &mut uz_i, rescale);
+
+        // Injection des champs macroscopiques (u déjà re-échelonnés).
+        sim.rho.copy_from_slice(&rho_i);
+        sim.ux.copy_from_slice(&ux_i);
+        sim.uy.copy_from_slice(&uy_i);
+        sim.uz.copy_from_slice(&uz_i);
+        sim.temperature.copy_from_slice(&t_i);
+    }
+
     let mut gpu = GpuSolver3D::from_solver(&sim).unwrap_or_else(|e| {
         eprintln!("Erreur : {e}");
         std::process::exit(7);
@@ -885,15 +945,31 @@ fn run_uniform3d(args: Args) {
     let mut nuc_n = 0usize;
     let start = Instant::now();
 
+    // --- Export périodique (--snapshot-every N, 0 = désactivé) ---
+    // Snapshot 3D b"SNP3" avec u_scale (utarget·(ny−1)) pour le re-échelonnage
+    // au restart. Écriture f64 depuis les champs sync (au moment du need_sync,
+    // en dehors du chemin critique GPU — même pattern 2D).
+    let snap_out_path = if args.snapshot_every > 0 {
+        let out = Path::new(&args.out);
+        if let Err(e) = std::fs::create_dir_all(out) {
+            eprintln!("Impossible de créer {} : {e}", out.display());
+            std::process::exit(4);
+        }
+        Some(out.join("snapshot.bin"))
+    } else {
+        None
+    };
+
     for step in 0..args.steps {
         // Pas GPU (2 dispatches fusionnés collide + stream_macro, batching
         // 64 pas) — le readback GPU→CPU n'a lieu que les pas où les champs
-        // sont consommés (diagnostics / moyennage / dernier pas).
+        // sont consommés (diagnostics / moyennage / snapshot / dernier pas).
         gpu.step(&sim);
         let need_sync = step % args.progress_every == 0
             || step + 1 == args.steps
             || (step >= args.sample_start
-                && (step - args.sample_start) % args.sample_every == 0);
+                && (step - args.sample_start) % args.sample_every == 0)
+            || (args.snapshot_every > 0 && (step + 1) % args.snapshot_every == 0);
         if need_sync {
             if let Err(e) = gpu.sync_into(&mut sim) {
                 eprintln!("Erreur de lecture GPU au pas {step} : {e}");
@@ -906,6 +982,30 @@ fn run_uniform3d(args: Args) {
             nuc_sum += sim.nusselt_hot();
             nuf_sum += sim.nusselt_cold();
             nuc_n += 1;
+        }
+
+        // Export périodique du snapshot 3D (écriture atomique tmp + rename).
+        if args.snapshot_every > 0 && (step + 1) % args.snapshot_every == 0 {
+            let path = snap_out_path.as_deref().expect("snapshot path");
+            let u_scale = args.utarget * (args.ny - 1) as f64;
+            let res = snapshot3d::write_snapshot_3d_atomic(
+                path,
+                sim.nx,
+                sim.ny,
+                sim.nz,
+                (step + 1) as u64,
+                u_scale,
+                &sim.rho,
+                &sim.ux,
+                &sim.uy,
+                &sim.uz,
+                &sim.temperature,
+            );
+            if let Err(e) = res {
+                eprintln!("Erreur d'export du snapshot 3D au pas {step} : {e}");
+                std::process::exit(5);
+            }
+            println!("snapshot 3D exporté au pas {step}");
         }
 
         // Diagnostic de stabilité toutes les progress-every itérations.

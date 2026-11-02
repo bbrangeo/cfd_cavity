@@ -195,10 +195,17 @@ Options uniformes (mode --mode uniform) :
 Options 3D (mode --mode uniform3d, Étape V1 plan 3D Trias) :
   --nz <usize>            profondeur de la grille (PÉRIODIQUE, L1=2 Trias
                           Case A)                    [défaut: 64]
+  --restart <path>        snapshot binaire 3D de départ (format SNP3,
+                          rho/ux/uy/uz/T ; grille quelconque, interpolation
+                          trilinéaire si ≠ ; re-échelonnage vitesse si
+                          u_scale diffère — header du snapshot)
+  --snapshot-every <usize> export atomique de snapshot.bin (SNP3 + u_scale)
+                          toutes les N étapes [défaut: 0 = désactivé] ;
+                          reprise via --restart
   (autres champs : --nx/--ny/--ra/--pr/--cs/--pr_t/--steps/--sample-start/
   --sample-every/--out/--utarget/--seed/--progress-every/--nu-start-mult) ;
-  hors scope V1 : --jobs, --alpha-mult, --restart, --nu, --snapshot-every,
-  --dynamic-smag, --smag-alpha, --nu-sm-min, --eta-test
+  hors scope V1 : --jobs, --alpha-mult, --nu, --dynamic-smag, --smag-alpha,
+  --nu-sm-min, --eta-test
 
 Options octree (mode --mode octree, ancien crate cfd_cavity_octree) :
   --nx0 <usize>           largeur grossière              [défaut: 64]
@@ -394,9 +401,7 @@ pub fn parse_args() -> Result<Args, String> {
         for (flag, cond) in [
             ("--jobs", args.jobs != 1),
             ("--alpha-mult", args.alpha_mult != 1.0),
-            ("--restart", args.restart.is_some()),
             ("--nu", args.nu.is_some()),
-            ("--snapshot-every", args.snapshot_every != 0),
             ("--dynamic-smag", args.dynamic_smag),
         ] {
             if cond {
