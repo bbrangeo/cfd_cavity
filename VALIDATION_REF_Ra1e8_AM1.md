@@ -138,7 +138,36 @@ sensibilité** : « alpha-mult 1.2 → Ra/Pr effectifs décalés (8.33e7, 0.592)
 Nuc 30.5745, écart réel vs Trias ≈ +5.4 % (à confirmer par la re-run am1) ».
 Toute mention de « 0.1–0.6 % vs Trias » issue de cette run doit être requalifiée.
 
-## 5. Résultats de la re-run — À REMPLIR
+## 5. Résultats de la re-run — exécutée sur tantanka (2026-11-02)
+
+> Matériel : tantanka (Quadro RTX 6000, 36 cœurs). Config §3.2 exacte
+> (ν=0.0012, am=1, jobs 8), 1M pas, 16 000 échantillons, 3193 s.
+> Sortie : `output/runs_uniforme/ra1e8_64x256_dns_am1/`,
+> log `output/logs/ra1e8_am1_tantanka.log`.
+
+| Métrique | am1 (re-run, Ra_eff = 1e8 exact) | am1.2 (ancienne, Ra_eff 8.33e7) |
+|---|---|---|
+| **Nuc** | **32.0499** | 30.5745 |
+| Nuf | 32.0500 | — |
+| Nu_vol | 34.16 (+6.6 % vs paroi) | — |
+| w_max(z=0.5) | 0.01586 | — |
+| y+ (paroi chaude) | 1.193 | — |
+| Masse (fin) | 1.000000 | — |
+| Ra_eff / Pr_eff | 1e8 / 0.71 (exact) | 8.33e7 / 0.592 |
+| Écart vs Trias(Ra_eff) | **+5.4 %** (vs 30.41) | +5.4 % (vs 29.0) |
+
+### Verdict P2'
+
+1. **À cas identique (1e8, 0.71), l'écart vs Trias est +5.4 %** — la
+   re-run confirme le point de sensibilité (§4) : les anciennes mentions
+   « 0.1–0.6 % vs Trias » étaient un artefact du décalage alpha-mult.
+   L'écart réel du code 2D 64×256 DNS est ~+5.4 %, hors fourchette ≤2 %.
+2. **Effet du décalage quantifié** : 30.57 (am1.2) → 32.05 (am1) : le
+   décalage Ra_eff/Pr_eff masquait ~1.5 pt de Nu.
+3. **Note identité volumétrique** : +6.6 % en DNS (contre +0.3 % sur le
+   CSV val2 en LES établi) — cohérent avec un régime moins statiste ; à
+   garder en tête, non bloquant.
+4. **Trajectoire** : Nuc stable ~32.06-32.08 dès ~800k pas — 1M pas suffit.
 
 ```
 Config lancée : <commande exacte>
