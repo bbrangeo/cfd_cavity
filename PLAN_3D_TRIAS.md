@@ -83,7 +83,7 @@ f_out ping-pong + f_col, idem g) = **2×19×3×4 = 456 octets/nœud** (pas 152).
 | # | Étape | Porte | Évidence minimale |
 |---|---|---|---|
 | 1 | Solveur 3D **GPU** (D3Q19, TRT, Guo, Smagorinsky) + tests unitaires 1-pas | V1 | **✅ PASSÉE 2026-11-01** : Ra=6.4e8 GPU 96×384×192, Nuc 49.98 vs Trias 49.24 (**+1.5 % ≤ 5 %**), 200k pas sans NaN, dérive masse 0.01 % (0.03 %/500k ≪ garde-fou 2 %), 62.8 MLUPS, 9 tests GPU verts (5×3D dont Guo analytique ratio 1.000) — `VALIDATION_3D_ETAPE_V1.md` |
-| 2 | Ra=1e8 3D DNS-like (grille résolue) | V2 | Nuc vs Trias 3D (grille qui résout la BL) |
+| 2 | Ra=6.4e8 3D grille fine (DNS-like uniforme sous-résolu, ~3-4 nœuds/BL) | V2 | Nuc vs Trias 3D (grille qui résout la BL) |
 | 3 | Ra=1e9+ 3D LES (SGS actif, sous-résolution volontaire) | V3 | ν_sm/ν rapporté, sensibilité Cs, comparaison DNS Trias |
 
 ## 5. Dépendances et ordonnancement

@@ -25,9 +25,10 @@ n = ln(66.63/49.24) / ln(2e9/6.4e8) = 0.3024/1.1394 ≈ 0.265
 Nuc(Ra=1e9) ≈ 49.24 × (1e9/6.4e8)^0.265 ≈ 55.4 ± 0.5
 ```
 
-Cette interpolation est documentée comme **incertaine à ±1-2 %** (la
-tendance log-log des points Trias 3D n'est pas une loi de puissance pure :
-n ≈ 0.265 puis ≈ 0.31 entre 2e9 et 1e10). L'écart V3 doit donc être lu
+Cette interpolation est documentée comme **incertaine à ±2 %** (l'exposant
+local croît avec Ra : 0.265 puis 0.31 — l'ancre réelle pourrait être
+légèrement plus haute que l'interpolation, rapprochant l'écart V3 de
+zéro). L'écart V3 doit donc être lu
 avec cette barre d'erreur en tête, et non comme un verdict absolu.
 
 ## 2. Protocole
@@ -123,10 +124,18 @@ Smagorinsky légèrement plus coûteux à νt/ν ≈ 0.09 vs 0.07).
 
 - **Sensibilité Cs** : non lancée (Cs = 0.1 seul). Le plan V3 prévoyait
   Cs ∈ {0.08, 0.1, 0.17} — à lancer sur tantanka si requis pour la thèse
-  (3 runs × ~3.2 h) ;
+  (3 runs × ~3.2 h). **Conséquence : avec une seule valeur de Cs, la porte
+  V3 valide un écart Nuc acceptable pour ce calage, pas la modélisation
+  SGS elle-même — la courbe Nuc(Cs) est requise pour appuyer la claim
+  "LES" en thèse.** ;
 - **Ancre interpolée** : si un DNS 3D Ra=1e9 indépendant (autre équipe)
   est identifié, l'ancre peut être remplacée ;
-- **y+ / profils** : non extraits (readback non branché côté uniform3d).
+- **y+ / profils** : non extraits (readback non branché côté uniform3d) —
+  conséquence directe : la claim "contenu SGS physique" (ν_sm/ν ≈ 0.09)
+  repose sur un ratio global, sans confrontation à une statistique
+  turbulente (profil de Nuc local, u_moyenne, tensions de Reynolds
+  Trias). À brancher avant intégration thèse §2.5 si la claim SGS y
+  figure.
 
 ## 6bis. Pourquoi pas Ra=2e9 (ancre DNS directe Trias Case B) — cadrage 2026-11-02
 
@@ -142,7 +151,10 @@ V3. **Non visé, pour deux contraintes documentées** :
 2. **Mémoire** : la vraie solution (grille plus fine, ν ∝ lz :
    256×1024×512 → ν ≈ 0.0024 > plancher) coûte 134M nœuds × 456
    octets ≈ 61 Go — hors budget RTX 6000 24 Go et M1 Max 64 Go
-   (même mur que Ra=1e10, plan §3).
+   (le mur ~61 Go du plan §3 ne s'applique qu'à une grille DNS-résolue
+   à 1e10 — une run LES à 1e10 sur 128×512×256 reste à 7.6 Go, cf. V4 ;
+   la vraie limite à 1e10 sur cette grille est la résolution BL, pas la
+   mémoire).
 
 **⚠️ Point non démontré (honnêteté) : le mur β de compressibilité en 3D
 uniforme n'est PAS mesuré.** Le mur documenté (campagne octree,
@@ -178,6 +190,7 @@ indirectement (via la pente de masse) comme non-limitant jusqu'à 1e10.
 | Pente masse | ~0.03 %/500k — rapportée | ✅ PASS |
 | ν_sm/ν rapporté | νt_max/ν ≈ 0.09 en fenêtre | ✅ documenté |
 | Croissance inter-Ra | cohérente avec exposant Trias 0.265 | ✅ |
+| Convergence maillage | établie à 6.4e8 seulement (V1→V2, non-monotone) ; Ra=1e9 : une seule grille | ✅ avec réserve |
 
 **Verdict global : PORTE V3 PASS (ancre interpolée, réserve documentée).**
 
