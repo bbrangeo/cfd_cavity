@@ -828,18 +828,25 @@ PORTE V2 (écart Nuc ≤ 5 %) : {}",
 /// Pas de solveur CPU 3D : `CavitySolver3D` ne porte que le calage unités
 /// et les champs initiaux ; le pas de temps vit dans `GpuSolver3D`.
 fn run_uniform3d(args: Args) {
-    /// Garde-fou de stabilité : abort si max_u dépasse cette valeur.
-    /// Relevé à 0.13 (vs 0.10 en 2D) : le démarrage à froid 3D passe par un
-    /// transitoire de chute libre u_ff = √(β_eff·(ΔT/2)·lz) ≈ 0.111 à
-    /// Ra=6.4e8 sur 96×384 (calculable analytiquement, mesuré 0.106 au pas
-    /// 4000), avant que l'amortissement visqueux n'établisse le régime
-    /// permanent (max_u ≈ 0.19·u_scale ≈ 0.03). Le 2D n'a jamais traversé ce
-    /// cas (runs Ra≥6.4e8 redémarrées d'un snapshot, step 0 : u=0.033).
-    /// Ma_local au pic = 0.13·√3 ≈ 0.225, transitoire bref toléré par TRT
-    /// Λ=3/16 ; le garde-fou reste un abort gracieux AVANT divergence NaN.
-    const MAX_U_ABORT: f64 = 0.13;
+    // Garde-fou de stabilité : abort si max_u dépasse cette valeur.
+    // Relevé à 0.13 (vs 0.10 en 2D) : le démarrage à froid 3D passe par un
+    // transitoire de chute libre u_ff = √(β_eff·(ΔT/2)·lz) ≈ 0.111 à
+    // Ra=6.4e8 sur 96×384 (calculable analytiquement, mesuré 0.106 au pas
+    // 4000), avant que l'amortissement visqueux n'établisse le régime
+    // permanent (max_u ≈ 0.19·u_scale ≈ 0.03). Le 2D n'a jamais traversé ce
+    // cas (runs Ra≥6.4e8 redémarrées d'un snapshot, step 0 : u=0.033).
+    // Ma_local au pic = 0.13·√3 ≈ 0.225, transitoire bref toléré par TRT
+    // Λ=3/16 ; le garde-fou reste un abort gracieux AVANT divergence NaN.
+    // Relevable via --max-u (transitoires de restart à Ra élevé, ex. V3→V4)
+    // sans toucher au défaut : les runs sans --max-u restent identiques.
+    let max_u_abort: f64 = args.max_u.unwrap_or(0.13);
 
     println!("=== Cavité DHC 3D (LBM D3Q19 TRT + Guo + Smagorinsky, GPU wgpu) ===");
+    println!(
+        "Garde-fou max_u : {:.2}{}",
+        max_u_abort,
+        if args.max_u.is_some() { " (--max-u)" } else { " (défaut)" }
+    );
     println!(
         "Grille : {}×{}×{} (AR = {:.2}) | Ra = {:.3e} | Pr = {} | Cs = {} | Pr_t = {} | z PÉRIODIQUE (Trias Case A)",
         args.nx,
@@ -1039,11 +1046,11 @@ fn run_uniform3d(args: Args) {
 
             // Garde-fou max_u : sortie gracieuse AVANT divergence NaN
             // (log de progression écrit directement ici, même pattern 2D).
-            if max_u > MAX_U_ABORT {
+            if max_u > max_u_abort {
                 let ma_local = max_u * 3.0f64.sqrt();
                 let abort_msg = format!(
                     "AVORT : max_u = {max_u:.5} dépasse le garde-fou {:.2} (Ma_local = max_u·√3 ≈ {ma_local:.3} > marge de sécurité)",
-                    MAX_U_ABORT
+                    max_u_abort
                 );
                 eprintln!("{abort_msg}");
                 log_lines.push(abort_msg.clone());

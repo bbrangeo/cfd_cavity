@@ -92,6 +92,9 @@ pub struct Args {
     pub nu_sm_min: f64,
     /// Ratio filtre test η = Δ/Δ̃ (défaut thèse : 2).
     pub eta_test: f64,
+    /// Garde-fou de stabilité max_u (option --max-u, mode uniform3d
+    /// uniquement). None = défaut 0.13 codé dans run_uniform3d.
+    pub max_u: Option<f64>,
     // --- Champs octree (ignorés en mode uniform) ---
     /// Taille du domaine grossier (équiv. grille uniforme 2·bl_width × ny0).
     pub nx0: usize,
@@ -135,6 +138,7 @@ impl Default for Args {
             smag_alpha: 0.5,
             nu_sm_min: -0.1,
             eta_test: 2.0,
+            max_u: None,
             // Champs octree (grille V2, plan §3.1 : équivalente 128×512 →
             // grossier 64×256, BL fine ×2 = 8 cellules grossières par paroi).
             nx0: 64,
@@ -202,6 +206,9 @@ Options 3D (mode --mode uniform3d, Étape V1 plan 3D Trias) :
   --snapshot-every <usize> export atomique de snapshot.bin (SNP3 + u_scale)
                           toutes les N étapes [défaut: 0 = désactivé] ;
                           reprise via --restart
+  --max-u <f64>           Garde-fou de stabilité max_u (défaut 0.13 en 3D) ;
+                          à relever pour les transitoires de restart à Ra
+                          élevé (ex. V3→V4 : --max-u 0.30)
   (autres champs : --nx/--ny/--ra/--pr/--cs/--pr_t/--steps/--sample-start/
   --sample-every/--out/--utarget/--seed/--progress-every/--nu-start-mult) ;
   hors scope V1 : --jobs, --alpha-mult, --nu, --dynamic-smag, --smag-alpha,
@@ -370,6 +377,15 @@ pub fn parse_args() -> Result<Args, String> {
                     return Err(format!("--nu {v} ≥ 0.002 : inutile, le calage utarget suffit ; --nu est réservé au sous-plancher"));
                 }
                 args.nu = Some(v)
+            }
+            "max-u" | "max_u" => {
+                let v: f64 = value
+                    .parse()
+                    .map_err(|_| format!("--max-u : flottant attendu, lu '{value}'"))?;
+                if !(v > 0.0) || !v.is_finite() {
+                    return Err("--max-u doit être > 0 et fini".into());
+                }
+                args.max_u = Some(v)
             }
             // --- Champs octree (mode --mode octree) ---
             "nx0" => args.nx0 = value.parse().map_err(|_| format!("--nx0 : entier attendu, lu '{value}'"))?,
